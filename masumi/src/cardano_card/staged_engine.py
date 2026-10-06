@@ -71,6 +71,10 @@ class StagedEngine(Engine):
             self.change(job, "quote_reconciling", "Preparation outcome uncertain; inspect the same job without repeating preparation")
 
     def accept_quote(self, job, raw):
+        # Preparation never spends, so a definitive no-cart answer ends the job before any escrow exists.
+        if isinstance(raw, dict) and raw.get("job_id") == job["id"] and raw.get("status") in {"failed_no_purchase", "needs_input"}:
+            self.change(job, "quote_rejected", "No usable cart was prepared; no payment or checkout")
+            return
         try:
             quote = PreparedQuote.model_validate(raw).model_dump()
             ceiling = quote["authorization_ceiling_cents"]
