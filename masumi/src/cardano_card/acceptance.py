@@ -71,22 +71,18 @@ class NodeRoutes:
         if envelope.get("status") != "success":
             raise ValueError("Buyer observation unavailable")
         data = envelope["data"]
+        if not data.get("SmartContractWallet"):
+            return None  # Node 0.22 assigns the buyer wallet only when it locks funds; not observable yet.
         source = data.get("PaymentSource") or {}
         if (data.get("blockchainIdentifier") != payment["blockchainIdentifier"] or
                 data.get("inputHash") != payment["inputHash"] or
                 source.get("network") != "Preprod" or source.get("paymentType") != "Web3CardanoV1" or
                 source.get("smartContractAddress") != payment["smartContractAddress"] or
                 (data.get("SellerWallet") or {}).get("walletVkey") != payment["sellerVKey"] or
+                (data.get("SmartContractWallet") or {}).get("walletVkey") != buyer_vkey or
                 MasumiEscrow.funds(data.get("PaidFunds")) != payment["RequestedFunds"] or
                 any(str(data.get(k)) != str(v) for k, v in payment["rawTimes"].items())):
             raise ValueError("Buyer observation identity or payment terms do not match")
-        wallet = data.get("SmartContractWallet")
-        if wallet is None and data.get("onChainState") is None:
-            # The node assigns a purchasing wallet asynchronously after accepting
-            # the request. Wait without allowing checkout or repeating funding.
-            return None
-        if (wallet or {}).get("walletVkey") != buyer_vkey:
-            raise ValueError("Buyer observation wallet does not match")
         records = (data.get("TransactionHistory") or []) + [data.get("CurrentTransaction") or {}]
         hashes = sorted({r["txHash"].lower() for r in records if isinstance(r.get("txHash"), str)
                          and re.fullmatch(r"[0-9a-fA-F]{64}", r["txHash"])})

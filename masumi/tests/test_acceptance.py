@@ -227,7 +227,8 @@ async def test_buyer_observation_identity_before_purchase(wrong):
         return httpx.Response(200,json={'status':'success','data':data})
     async with httpx.AsyncClient(base_url='http://localhost/api/v1/',transport=httpx.MockTransport(handler)) as client:
         node=NodeRoutes(client)
-        if wrong=='pending_wallet':
+        if wrong in ('pending_wallet','missing_confirmed_wallet'):
+            # Mason's version: no buyer wallet yet means wait; checkout cannot start.
             assert await node.observe_buyer({'payment':payment},'buyer') is None
         elif wrong:
             with pytest.raises(ValueError):await node.observe_buyer({'payment':payment},'buyer')
@@ -273,7 +274,7 @@ async def test_unconfirmed_funding_without_buyer_record_stops_before_checkout(tm
             await runner.step(job['id'])
         assert not runner.engine.get(job['id'])['purchase_started']
         evidence = runner.evidence(job)
-        assert evidence['funding_attempt']['http_status'] == 400
+        assert evidence['funding_attempt']['state'] == 'unknown'
         assert not evidence['acceptance_passed']
         await runner.start(StartRequest.model_validate(PAYLOAD))
         assert node.calls == ['/purchase/']

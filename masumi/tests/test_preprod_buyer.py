@@ -123,8 +123,7 @@ async def test_http_failure_is_durable_private_and_never_retried(buyer, status):
                               request=httpx.Request('POST', 'http://localhost/purchase/'))
     buyer.client.post = rejected
     first = await buyer.fund(PAYLOAD, terms())
-    assert first['state'] == 'unknown' and first['http_status'] == status
-    assert first['diagnostic'] == 'http_error'
+    assert first['state'] == 'unknown'
     replacement = PreprodBuyer(buyer.store, buyer.client, 'expected-agent', 'expected-seller',
                                lambda *_: 'expected-hash', 'buyer-identity')
     assert await replacement.fund(PAYLOAD, terms()) == first

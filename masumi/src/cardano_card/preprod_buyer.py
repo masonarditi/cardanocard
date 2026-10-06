@@ -67,11 +67,10 @@ class PreprodBuyer:
         normalized = [int(stamp) // 1000 if int(stamp) > 100_000_000_000 else int(stamp) for stamp in raw]
         if not self.clock() + 60 < normalized[0] < normalized[1] <= normalized[2] <= normalized[3]:
             raise ValueError("Payment deadline expired or invalid")
+        # Node 0.22 rejects Amounts for a fixed-price agent; the fee was already checked against expected_funds above.
         return {"identifierFromPurchaser": validated.identifier_from_purchaser,
                 "network": "Preprod", "sellerVkey": self.seller_vkey, "paymentType": "Web3CardanoV1",
                 "blockchainIdentifier": terms["blockchainIdentifier"], "agentIdentifier": self.agent_identifier,
-                # V1 resolves fixed pricing from the registry and rejects Amounts.
-                # The requested amount is still checked against our budget above.
                 "inputHash": expected, **dict(zip(TIMES, raw))}
 
     async def _once(self, key, route, payload):
@@ -87,29 +86,19 @@ class PreprodBuyer:
             self.store.put("buyer_writes", key, record)
             try:
                 response = await self.client.post(route, json=payload)
-                record["http_status"] = response.status_code
-                record["diagnostic"] = "http_error" if response.is_error else "unconfirmed_response"
-                if response.is_error:
+                if response.status_code >= 400:
                     # Keep the node's own error text (no payload or credentials) so a rejection can be diagnosed.
-                    try:
-                        record["node_error"] = str((response.json().get("error") or {}).get("message"))[:300]
-                    except Exception:
-                        pass
-                self.store.put("buyer_writes", key, record)
+                    record["node_error"] = str((response.json().get("error") or {}).get("message"))[:300]
+                    self.store.put("buyer_writes", key, record)
                 response.raise_for_status()
                 data = response.json()
                 if data.get("status") != "success":
                     return record
                 # Accepted by node is not on-chain confirmation. Preserve only nonsecret metadata.
                 record["state"] = "accepted_by_node"
-                record["diagnostic"] = "accepted_by_node"
                 self.store.put("buyer_writes", key, record)
             except Exception:
-                # Never persist provider bodies or exception text: either can
-                # contain credentials. An HTTP error alone does not prove that
-                # no write occurred; reconcile before creating another payment.
-                record.setdefault("diagnostic", "transport_or_response_error")
-                self.store.put("buyer_writes", key, record)
+                pass
             return record
 
     async def fund(self, request, terms):
