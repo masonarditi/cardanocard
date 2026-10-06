@@ -1,22 +1,27 @@
-"""Purchase interface v2: prepare a quote, confirm it only after escrow is funded, inspect any time.
+"""Purchase interface v2 for Ezra's staged coordinator (masumi/docs/INTEGRATION_PLAN.md, "Mason v2 handoff").
 
-Every job is saved to a local ledger before any Agentcard call, and every confirm attempt is saved
-before it is sent. Uncertain confirms are only ever inspected, never repeated.
+prepare_purchase quotes without spending, confirm_purchase places the saved quote with the vaulted card once escrow
+is funded, inspect_purchase only reads. Every job is saved before any Agentcard call and every confirm attempt before
+it is sent, so an uncertain confirm is inspected, never repeated. Responses match masumi's
+staged_purchase.PreparedQuote / CheckoutOutcome exactly.
 """
 import hashlib
 import json
 import os
 import time
+from decimal import Decimal
 
 from agentcard import HERE, PROD, TOKENS, buy, conversation
 from purchase import NO_QUESTIONS
 
-VERSION = 2
+PURCHASE_PROTOCOL_VERSION = 2
 CARD_LIMIT_CENTS = 5000
+QUOTE_TTL_S = 1800
 LEDGER = HERE / (".purchase_jobs.prod.json" if PROD else ".purchase_jobs.json")
 # Agentcard keeps one Amazon cart per user, so items from earlier conversations can still be in it.
 EMPTY_CART = "Start from an empty cart: remove anything already in it, then add only what this message asks for."
 FINAL = {"confirmed", "failed_no_purchase", "partial"}
+IDENTITY = {"payment_source": "vault", "currency": "USD"}
 
 
 def _load():
@@ -36,11 +41,34 @@ def _record(job_id):
     return rec
 
 
+def _wire(rec):
+    """Sanitized response: PreparedQuote until checkout is requested, then CheckoutOutcome."""
+    o, q, order = rec["outcome"], rec["quote"] or {}, rec["order"] or {}
+    items = [{"name": i["name"], "quantity": i["quantity"]} for i in q.get("items", [])]
+    if q and not rec["confirm_called"] and (o["status"] == "prepared" or o.get("reason") == "over_budget"):
+        # Over-budget carts are still quoted: the coordinator rejects them by comparing the ceiling to its budget.
+        return {"status": "prepared", "job_id": rec["job_id"], "quote_id": q["quote_id"],
+                "conversation_id": rec["conversation_id"], "cart_hash": q["cart_hash"], **IDENTITY,
+                "subtotal_cents": q["subtotal_cents"], "estimated_total_cents": q["estimated_total_cents"],
+                "authorization_ceiling_cents": q["ceiling_cents"], "expires_at": q["expires_at"],
+                "merchant": q["merchant"], "items": items}
+    out = {"status": o["status"], "job_id": rec["job_id"], "quote_id": q.get("quote_id", ""),
+           "conversation_id": rec["conversation_id"] or "", "cart_hash": q.get("cart_hash", ""), **IDENTITY,
+           "order_id": order.get("order_id"), "reason": o.get("decline_code") or o.get("reason")}
+    if o["status"] == "confirmed":
+        out.update(merchant_confirmed=True, charge_status="captured", total_cents=order.get("total_cents"),
+                   merchant=order.get("merchant_name") or q.get("merchant"), items=items)
+    elif o["status"] == "failed_no_purchase":
+        out.update(no_purchase=not order.get("order_id"), charge_status="none")
+    elif o["status"] == "approval_required":
+        out["approval_url"] = o.get("approval_url")
+    return out
+
+
 def _out(rec, status, **extra):
-    rec["outcome"] = {"version": VERSION, "status": status, "job_id": rec["job_id"],
-                      "conversation_id": rec["conversation_id"], **extra}
+    rec["outcome"] = {"status": status, **extra}
     _save(rec)
-    return rec["outcome"]
+    return _wire(rec)
 
 
 def _detail(r):
@@ -48,17 +76,17 @@ def _detail(r):
 
 
 def _quote(rec, cart, allowed):
-    """Saves the cart as the job's current quote; returns the reason it can't be confirmed, if any."""
+    """Saves the cart as the job's quote; returns the reason it can't be confirmed, if any."""
     total, estimate, ceiling = (cart.get(k) for k in ("totalCents", "estimatedTotalCents", "approvedCeilingCents"))
     currency = str(cart.get("merchant_currency") or cart.get("currency") or "usd").lower()
     rec["quote"] = {
         "quote_id": "q_" + hashlib.sha256(f"{rec['job_id']}:{cart['hash']}".encode()).hexdigest()[:16],
         "cart_hash": cart["hash"], "merchant": cart.get("merchant_name") or cart.get("merchant"),
-        "items": [{"name": i.get("name"), "qty": i.get("qty", 1), "price_cents": i.get("priceCents"),
-                   "product_id": i.get("product_id")}
-                  for i in cart.get("items", [])],
-        "currency": currency, "subtotal_cents": total, "estimated_total_cents": estimate, "ceiling_cents": ceiling,
-        "total_is_estimate": cart.get("totalIsEstimate"), "budget_cents": rec["budget_cents"]}
+        "items": [{"name": i.get("name"), "quantity": i.get("qty", 1), "price_cents": i.get("priceCents"),
+                   "product_id": i.get("product_id")} for i in cart.get("items", [])],
+        "currency": currency, "subtotal_cents": total, "estimated_total_cents": total if estimate is None else estimate,
+        "ceiling_cents": total if ceiling is None else ceiling, "total_is_estimate": cart.get("totalIsEstimate"),
+        "budget_cents": rec["budget_cents"], "expires_at": int(time.time()) + QUOTE_TTL_S}
     if not cart.get("items") or any(i.get("product_id") not in allowed for i in cart["items"]):
         return "unexpected_items"
     amounts = [a for a in (total, estimate, ceiling) if a is not None]
@@ -71,24 +99,18 @@ def _quote(rec, cart, allowed):
         return "over_budget"
 
 
-def _quoted(rec, cart, allowed, status="prepared", **extra):
-    problem = _quote(rec, cart, allowed)
-    if problem:
-        return _out(rec, "failed_no_purchase", reason=problem, quote=rec["quote"])
-    return _out(rec, status, quote=rec["quote"], **extra)
-
-
-def prepare_purchase(job_id: str, intent: str, max_total_usd, address: dict) -> dict:
+def prepare_purchase(*, job_id: str, intent: str, max_total_usd, address: dict) -> dict:
     """Builds and saves a quote. Never confirms checkout. Repeating a job_id returns its saved state."""
-    budget = min(round(float(max_total_usd) * 100), CARD_LIMIT_CENTS)
+    budget = min(int(Decimal(str(max_total_usd)) * 100), CARD_LIMIT_CENTS)
     fingerprint = hashlib.sha256(json.dumps([intent, budget, address], sort_keys=True).encode()).hexdigest()
     saved = _load().get(job_id)
     if saved:
         if saved["fingerprint"] != fingerprint:
             raise ValueError(f"job_id {job_id} was already used with different inputs")
-        return inspect_purchase(job_id)
+        return inspect_purchase(job_id=job_id)
     rec = {"job_id": job_id, "env": "prod" if PROD else "sandbox", "fingerprint": fingerprint, "budget_cents": budget,
-           "conversation_id": None, "quote": None, "attempts": [], "order": None, "outcome": None}
+           "conversation_id": None, "quote": None, "confirm_called": False, "attempts": [], "order": None,
+           "outcome": None}
     _save(rec)
     try:
         code, r = buy({"ask": f"{EMPTY_CART} {intent}. {NO_QUESTIONS}", "delivery_address": address})
@@ -102,20 +124,22 @@ def prepare_purchase(job_id: str, intent: str, max_total_usd, address: dict) -> 
         return _out(rec, "failed_no_purchase", reason="multiple_carts")
     if not cart or not cart.get("hash"):
         if r.get("status") == "needs_input":
-            return _out(rec, "needs_input", reason="needs_input", message=r.get("reply"))
+            return _out(rec, "needs_input", reason="needs_input", detail=r.get("reply"))
         return _out(rec, "failed_no_purchase", reason="no_cart", detail=r.get("reply"))
-    return _quoted(rec, cart, {i.get("id") for i in (r.get("catalog") or {}).get("items") or []} - {None})
+    problem = _quote(rec, cart, {i.get("id") for i in (r.get("catalog") or {}).get("items") or []} - {None})
+    return _out(rec, "failed_no_purchase", reason=problem) if problem else _out(rec, "prepared")
 
 
-def confirm_purchase(job_id: str, quote_id: str) -> dict:
+def confirm_purchase(*, job_id: str, quote_id: str) -> dict:
     """Places the saved quote with the vaulted card. Call only after escrow is funded and the quote approved."""
     rec = _record(job_id)
-    if rec["order"] or any(a["state"] in ("sent", "charged") for a in rec["attempts"]):
-        return inspect_purchase(job_id)
-    if (rec["outcome"] or {}).get("status") not in ("prepared", "approval_required"):
-        return rec["outcome"] or inspect_purchase(job_id)
-    if quote_id != rec["quote"]["quote_id"]:
-        return _out(rec, "approval_required", reason="quote_changed", quote=rec["quote"])
+    if rec["quote"] and quote_id != rec["quote"]["quote_id"]:
+        raise ValueError(f"quote_id {quote_id} is not job {job_id}'s saved quote")
+    rec["confirm_called"] = True
+    if (rec["order"] or any(a["state"] in ("sent", "charged") for a in rec["attempts"])
+            or (rec["outcome"] or {}).get("status") not in ("prepared", "approval_required")):
+        _save(rec)
+        return inspect_purchase(job_id=job_id)
     attempt = {"quote_id": quote_id, "cart_hash": rec["quote"]["cart_hash"], "sent_at": time.time(), "state": "sent"}
     rec["attempts"].append(attempt)
     _save(rec)
@@ -126,8 +150,7 @@ def confirm_purchase(job_id: str, quote_id: str) -> dict:
         return _inspect(rec, detail=repr(e))
     if code == 409 and isinstance(r, dict) and r.get("cart"):
         attempt["state"] = "no_charge"
-        approved = {i["product_id"] for i in rec["quote"]["items"]}
-        return _quoted(rec, r["cart"], approved, "approval_required", reason="cart_changed")
+        return _out(rec, "failed_no_purchase", reason="cart_changed", detail=_detail(r))
     if code >= 500 or code == 409:
         return _inspect(rec, detail=_detail(r))
     if code >= 400:
@@ -137,28 +160,27 @@ def confirm_purchase(job_id: str, quote_id: str) -> dict:
     if r.get("status") == "partially_placed":
         attempt["state"] = "charged"
         rec["order"] = {"order_id": r.get("order_id"), "placements": r.get("placements")}
-        return _out(rec, "partial", order=rec["order"], quote=rec["quote"])
+        return _out(rec, "partial", reason="partially_placed")
     if r.get("status") == "order_placed" or r.get("order_id"):
         attempt["state"] = "charged"
         rec["order"] = {"order_id": r.get("order_id")}
         return _inspect(rec)
     if decline == "vault_approval_required":
         attempt["state"] = "approval_pending"
-        return _out(rec, "approval_required", reason="vault_approval_required", approval_url=r.get("approval_url"),
-                    quote=rec["quote"])
+        return _out(rec, "approval_required", reason=decline, approval_url=r.get("approval_url"))
     if r.get("charge_status") == "none" and decline and decline != "in_progress":
         attempt["state"] = "no_charge"
         return _out(rec, "failed_no_purchase", reason="declined", decline_code=decline)
     return _inspect(rec)
 
 
-def inspect_purchase(job_id: str) -> dict:
-    """Read-only: returns the saved outcome, or reads the Agentcard conversation after a confirm attempt."""
+def inspect_purchase(*, job_id: str) -> dict:
+    """Read-only: returns the saved state, or reads the Agentcard conversation after a confirm attempt."""
     rec = _record(job_id)
     if rec["outcome"] is None:
         return _out(rec, "failed_no_purchase", reason="prepare_interrupted")
     if rec["outcome"]["status"] in FINAL or not any(a["state"] != "no_charge" for a in rec["attempts"]):
-        return rec["outcome"]
+        return _wire(rec)
     return _inspect(rec)
 
 
@@ -172,7 +194,7 @@ def _inspect(rec, detail=None):
     orders, saved_id = conv.get("orders") or [], (rec["order"] or {}).get("order_id")
     if len(orders) > 1:
         rec["order"] = {"order_id": saved_id, "orders": orders}
-        return _out(rec, "partial", order=rec["order"], quote=rec["quote"])
+        return _out(rec, "partial", reason="multiple_orders")
     if orders:
         o = orders[0]
         if saved_id and o.get("order_id") != saved_id:
@@ -182,17 +204,15 @@ def _inspect(rec, detail=None):
             a["state"] = "charged" if a["state"] == "sent" else a["state"]
         status = o.get("status")
         if status == "settled":
-            return _out(rec, "confirmed", order=rec["order"], quote=rec["quote"])
+            return _out(rec, "confirmed")
         if status == "failed":
-            return _out(rec, "failed_no_purchase", reason="funding_failed", order=rec["order"])
-        return _out(rec, "pending", reason="charge_confirming" if status == "confirming" else f"order_{status}",
-                    order=rec["order"])
+            return _out(rec, "failed_no_purchase", reason="funding_failed")
+        return _out(rec, "pending", reason="charge_confirming" if status == "confirming" else f"order_{status}")
     last = conv.get("last_checkout") or {}
     if saved_id:
-        return _out(rec, "pending", reason="order_not_in_ledger_yet", order=rec["order"])
+        return _out(rec, "pending", reason="order_not_in_ledger_yet")
     if last.get("status") == "needs_approval" or last.get("decline_code") == "vault_approval_required":
-        return _out(rec, "approval_required", reason="vault_approval_required", approval_url=last.get("approval_url"),
-                    quote=rec["quote"])
+        return _out(rec, "approval_required", reason="vault_approval_required", approval_url=last.get("approval_url"))
     if last.get("charge_status") == "none" and last.get("status") in ("denied", "error"):
         for a in rec["attempts"]:
             a["state"] = "no_charge"
@@ -204,5 +224,5 @@ def _inspect(rec, detail=None):
 def whoami() -> dict:
     """Which Agentcard environment and user this adapter will spend from. Offline; no token refresh."""
     tokens = json.loads(TOKENS.read_text()) if TOKENS.exists() else {}
-    return {"version": VERSION, "env": "prod" if PROD else "sandbox", "user_id": tokens.get("user_id"),
-            "ledger": LEDGER.name, "card_limit_cents": CARD_LIMIT_CENTS}
+    return {"protocol": PURCHASE_PROTOCOL_VERSION, "env": "prod" if PROD else "sandbox",
+            "user_id": tokens.get("user_id"), "ledger": LEDGER.name, "card_limit_cents": CARD_LIMIT_CENTS}

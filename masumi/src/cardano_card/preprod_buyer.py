@@ -89,6 +89,12 @@ class PreprodBuyer:
                 response = await self.client.post(route, json=payload)
                 record["http_status"] = response.status_code
                 record["diagnostic"] = "http_error" if response.is_error else "unconfirmed_response"
+                if response.is_error:
+                    # Keep the node's own error text (no payload or credentials) so a rejection can be diagnosed.
+                    try:
+                        record["node_error"] = str((response.json().get("error") or {}).get("message"))[:300]
+                    except Exception:
+                        pass
                 self.store.put("buyer_writes", key, record)
                 response.raise_for_status()
                 data = response.json()
