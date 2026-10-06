@@ -1,6 +1,7 @@
 import asyncio
 import hmac
 import os
+import sys
 from pathlib import Path
 from contextlib import asynccontextmanager, suppress
 from typing import Literal
@@ -13,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .engine import Conflict, Engine
 from .models import INPUT_SCHEMA, ProvideInput, StartRequest
-from .providers import FakeEscrow, FakePurchaser
+from .providers import FakeEscrow, FakePurchaser, ModulePurchaser
 from .store import Store
 from .event_output import event_line, feed_banner
 from .agentcard_bridge import AgentCardPurchaser, ReplayTransport
@@ -31,10 +32,10 @@ def configured_engine():
     mode = os.getenv("CARDANO_CARD_MODE", "local")
     if mode not in {"local", "preprod"}:
         raise ValueError("Only local and Preprod are supported")
-    # Real merchant charging is deliberately gated until Preprod/contract acceptance tests pass.
+    # mason = real AgentCard through ../agentcard/purchase.py (sandbox unless AGENTCARD_ENV=prod).
     backend = os.getenv("PURCHASE_BACKEND", "fake")
-    if backend not in {"fake", "replay", "staged_fake", "staged_module"}:
-        raise ValueError("Live purchasing is not enabled in this scaffold; validate Mason's contract first")
+    if backend not in {"fake", "replay", "mason", "staged_fake", "staged_module"}:
+        raise ValueError("PURCHASE_BACKEND must be fake, replay, mason, staged_fake or staged_module")
     if backend == "staged_module" and (mode != "preprod" or
             os.getenv("ALLOW_EXTERNAL_VAULT_CHECKOUT") != "true" or
             os.getenv("VAULT_OPERATOR_EXCLUSIVE") != "true"):
@@ -56,8 +57,12 @@ def configured_engine():
             return StagedEngine(store, escrow, module,
                 escrow_lovelace=int(os.getenv("MASUMI_FEE_LOVELACE", "10000000")),
                 payout_address=os.getenv("PAYOUT_ADDRESS", "SIM-payout" if mode == "local" else ""))
-        purchaser = (AgentCardPurchaser(store, ReplayTransport(store, os.getenv("REPLAY_SCENARIO", "success")))
-                     if backend == "replay" else FakePurchaser(store, os.getenv("FAKE_SCENARIO", "success")))
+        if backend == "mason":
+            sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "agentcard"))
+            purchaser = ModulePurchaser("purchase")
+        else:
+            purchaser = (AgentCardPurchaser(store, ReplayTransport(store, os.getenv("REPLAY_SCENARIO", "success")))
+                         if backend == "replay" else FakePurchaser(store, os.getenv("FAKE_SCENARIO", "success")))
         return Engine(store, escrow, purchaser)
     except Exception:
         store.close()
