@@ -63,8 +63,9 @@ def private_env(path, updates):
 
 
 class PreprodSetup:
-    def __init__(self, store, node, chain=None, identity=None):
+    def __init__(self, store, node, chain=None, identity=None, *, name="Cardano Card Preprod", author="Cardano Card team"):
         self.store, self.node, self.chain = store, node, chain
+        self.name, self.author = name, author
         self.identity = identity or str(node.base_url)
         loopback_url(str(node.base_url))
         if str(node.base_url).rstrip("/").split("?")[0].endswith("/api/v1") is False:
@@ -174,16 +175,16 @@ class PreprodSetup:
                 "transaction_hash": tx if isinstance(tx, str) and re.fullmatch(r"[0-9a-fA-F]{64}", tx) else None}
 
     @staticmethod
-    def registration_payload(report, api_url, fee="10000000"):
+    def registration_payload(report, api_url, fee="10000000", name="Cardano Card Preprod", author="Cardano Card team"):
         api_url = loopback_url(api_url)
         if not str(fee).isdigit() or not 0 < int(fee) <= 100_000_000:
             raise ValueError("Preprod service fee must be positive and at most 100 test ADA")
         return {"network": "Preprod", "sellingWalletVkey": report["wallets"]["seller"]["walletVkey"],
-                "ExampleOutputs": [], "Tags": ["shopping", "agentcard"], "name": "Cardano Card Preprod",
+                "ExampleOutputs": [], "Tags": ["shopping", "agentcard"], "name": name,
                 "apiBaseUrl": api_url, "description": "Sandbox purchasing agent; merchant spending is separate from the service fee.",
                 "Capability": {"name": "cardano-card", "version": "0.1.0"},
                 "AgentPricing": {"pricingType": "Fixed", "Pricing": [{"unit": "", "amount": str(int(fee))}]},
-                "Author": {"name": "Cardano Card team"}}
+                "Author": {"name": author}}
 
     @staticmethod
     def _matches(asset, payload):
@@ -195,7 +196,7 @@ class PreprodSetup:
     async def register(self, api_url="http://127.0.0.1:8081", fee="10000000", *, execute=False, seller_vkey=None, buyer_vkey=None):
         async with self.lock:
             report = await self.inspect(seller_vkey, buyer_vkey)
-            payload = self.registration_payload(report, api_url, fee)
+            payload = self.registration_payload(report, api_url, fee, self.name, self.author)
             fingerprint = digest({"node": self.identity, "contract": report["contract_address"], "payload": payload})
             assets = await self.registry(report["contract_address"])
             matches = [a for a in assets if self._matches(a, payload)]
@@ -303,7 +304,7 @@ async def run(args):
     try:
         async with httpx.AsyncClient(base_url=node_url, headers={"token": key}, timeout=30) as node, \
                    httpx.AsyncClient(base_url=BLOCKFROST_URL, headers={"project_id": blockfrost or ""}, timeout=30) as chain:
-            setup = PreprodSetup(store, node, chain if blockfrost else None)
+            setup = PreprodSetup(store, node, chain if blockfrost else None, name=args.agent_name, author=args.author)
             options = {"seller_vkey": args.seller_vkey, "buyer_vkey": args.buyer_vkey}
             if args.action == "inspect":
                 report = await setup.inspect(**options)
@@ -329,6 +330,8 @@ def main():
     parser.add_argument("--fee", default="10000000")
     parser.add_argument("--seller-vkey")
     parser.add_argument("--buyer-vkey")
+    parser.add_argument("--agent-name", default="Cardano Card Preprod", help="Registered name; label whose node this is")
+    parser.add_argument("--author", default="Cardano Card team")
     args = parser.parse_args()
     try:
         asyncio.run(run(args))

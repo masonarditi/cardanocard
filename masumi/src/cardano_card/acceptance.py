@@ -61,6 +61,8 @@ class NodeRoutes:
         if envelope.get("status") != "success":
             raise ValueError("Buyer observation unavailable")
         data = envelope["data"]
+        if not data.get("SmartContractWallet"):
+            return None  # Node 0.22 assigns the buyer wallet only when it locks funds; not observable yet.
         source = data.get("PaymentSource") or {}
         if (data.get("blockchainIdentifier") != payment["blockchainIdentifier"] or
                 data.get("inputHash") != payment["inputHash"] or
