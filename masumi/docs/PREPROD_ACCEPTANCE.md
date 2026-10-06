@@ -48,6 +48,8 @@ Create an ignored `work/acceptance-input.json` containing the input object (`ask
 
 The runner verifies live registration, fixed fee, contract, wallet identity, schema and restricted API keys before creating a payment. New funding needs fee plus a buyer fee buffer and seller transaction funds. Resume after an existing funding attempt does not demand that original balance again. Buyer payment identity is checked before the coordinator may start purchasing. A timeout, crash or unknown payment response never triggers another funding POST.
 
+For fixed-price V1 agents the buyer validates the quoted fee locally and omits `Amounts` from the purchase request; the node reads pricing from registration and rejects that field. Failed requests retain a safe HTTP status in evidence. If funding is unconfirmed and the buyer record is absent, the runner stops with `BLOCKED` and saves `INCOMPLETE` evidence instead of waiting through settlement deadlines. An HTTP error or missing record alone is not authorization to repay: reconcile node records, transaction history and chain evidence first. Expired terms require a separately recorded new case after definitive reconciliation.
+
 The terminal prints durable lifecycle events plus a periodic waiting message. `--ascii` disables emoji. Stop with Ctrl-C and resume with the exact same command. Real contract deadlines remain in force: the current payout window begins roughly 36 minutes after payment creation, followed by processing and confirmations. A short CLI timeout does not cancel an escrow or purchase.
 
 ## AgentCard sandbox refund

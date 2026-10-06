@@ -40,6 +40,9 @@ def configured_engine():
             os.getenv("ALLOW_EXTERNAL_VAULT_CHECKOUT") != "true" or
             os.getenv("VAULT_OPERATOR_EXCLUSIVE") != "true"):
         raise ValueError("External Vault checkout requires Preprod escrow and explicit execution/operator flags")
+    if backend == "mason" and mode == "local" and os.getenv("AGENTCARD_ENV") == "prod":
+        # Local escrow is fake: anyone with the API token could "fund" a job and spend the real card.
+        raise ValueError("Production AgentCard purchases require Preprod escrow (CARDANO_CARD_MODE=preprod)")
     store = Store(os.getenv("CARDANO_CARD_DB", "data/jobs.db"))
     try:
         if mode == "preprod":
@@ -234,3 +237,7 @@ def main():
                      live_output=os.getenv("CARDANO_CARD_LIVE_OUTPUT", "true").lower() == "true")
     # Single process, loopback only. Exposure/hosting is a later explicit step.
     uvicorn.run(app, host="127.0.0.1", port=int(os.getenv("CARDANO_CARD_PORT", "8080")), access_log=False)
+
+
+if __name__ == "__main__":
+    main()

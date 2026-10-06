@@ -1,3 +1,4 @@
+import fcntl
 import json
 import os
 import time
@@ -51,17 +52,37 @@ def org(method, path, **kw):
 
 
 def save_tokens(user_id, d):
-    TOKENS.write_text(json.dumps({"user_id": user_id, "access_token": d["access_token"],
-                                  "refresh_token": d["refresh_token"],
-                                  "expires_at": time.time() + d["expires_in"]}, indent=2))
-    TOKENS.chmod(0o600)
+    # Each refresh returns a new single-use refresh token: write it atomically, owner-only.
+    tmp = TOKENS.with_suffix(f".{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"user_id": user_id, "access_token": d["access_token"], "refresh_token": d["refresh_token"],
+                   "expires_at": time.time() + d["expires_in"]}, f, indent=2)
+    os.replace(tmp, TOKENS)
+
+
+# Shared with masumi's SandboxTransport: one lockfile and one "refresh in flight" marker per directory.
+LOCKFILE = HERE / ".agentcard_tokens.lockfile"
+REFRESH_MARKER = HERE / ".agentcard_refresh_pending"
 
 
 def user_token():
     t = json.loads(TOKENS.read_text())
-    if time.time() > t["expires_at"] - 60:
-        save_tokens(t["user_id"], org("POST", "/api/v2/connect/refresh", json={"refresh_token": t["refresh_token"]}))
-        t = json.loads(TOKENS.read_text())
+    if time.time() <= t["expires_at"] - 60:
+        return t["access_token"]
+    with open(LOCKFILE, "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("another process holds the Agentcard token lock; not refreshing")
+        t = json.loads(TOKENS.read_text())  # another process may have refreshed already
+        if time.time() > t["expires_at"] - 60:
+            if REFRESH_MARKER.exists():
+                raise RuntimeError("an earlier token refresh did not finish; reconcile before refreshing again")
+            REFRESH_MARKER.write_text(json.dumps({"started_at": time.time()}))
+            save_tokens(t["user_id"], org("POST", "/api/v2/connect/refresh", json={"refresh_token": t["refresh_token"]}))
+            REFRESH_MARKER.unlink()
+            t = json.loads(TOKENS.read_text())
     return t["access_token"]
 
 

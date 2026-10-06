@@ -112,3 +112,14 @@ async def test_replay_demo_and_private_evidence(tmp_path):
             assert TOKEN not in str(proof)
     finally:
         store.close()
+
+
+def test_production_card_requires_real_escrow(monkeypatch, tmp_path):
+    import pytest
+    from cardano_card.api import configured_engine
+    monkeypatch.setenv("CARDANO_CARD_MODE", "local")
+    monkeypatch.setenv("PURCHASE_BACKEND", "mason")
+    monkeypatch.setenv("AGENTCARD_ENV", "prod")
+    monkeypatch.setenv("CARDANO_CARD_DB", str(tmp_path / "jobs.db"))
+    with pytest.raises(ValueError, match="Preprod escrow"):
+        configured_engine()

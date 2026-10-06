@@ -70,7 +70,9 @@ class PreprodBuyer:
         return {"identifierFromPurchaser": validated.identifier_from_purchaser,
                 "network": "Preprod", "sellerVkey": self.seller_vkey, "paymentType": "Web3CardanoV1",
                 "blockchainIdentifier": terms["blockchainIdentifier"], "agentIdentifier": self.agent_identifier,
-                "inputHash": expected, "Amounts": funds, **dict(zip(TIMES, raw))}
+                # V1 resolves fixed pricing from the registry and rejects Amounts.
+                # The requested amount is still checked against our budget above.
+                "inputHash": expected, **dict(zip(TIMES, raw))}
 
     async def _once(self, key, route, payload):
         async with self.lock:
@@ -85,15 +87,23 @@ class PreprodBuyer:
             self.store.put("buyer_writes", key, record)
             try:
                 response = await self.client.post(route, json=payload)
+                record["http_status"] = response.status_code
+                record["diagnostic"] = "http_error" if response.is_error else "unconfirmed_response"
+                self.store.put("buyer_writes", key, record)
                 response.raise_for_status()
                 data = response.json()
                 if data.get("status") != "success":
                     return record
                 # Accepted by node is not on-chain confirmation. Preserve only nonsecret metadata.
                 record["state"] = "accepted_by_node"
+                record["diagnostic"] = "accepted_by_node"
                 self.store.put("buyer_writes", key, record)
             except Exception:
-                pass
+                # Never persist provider bodies or exception text: either can
+                # contain credentials. An HTTP error alone does not prove that
+                # no write occurred; reconcile before creating another payment.
+                record.setdefault("diagnostic", "transport_or_response_error")
+                self.store.put("buyer_writes", key, record)
             return record
 
     async def fund(self, request, terms):

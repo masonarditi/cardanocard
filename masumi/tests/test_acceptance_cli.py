@@ -74,7 +74,8 @@ async def test_execute_preflight_to_proof_and_resume_without_repeating_writes(
         if route == '/api/v1/api-key-status':
             assert request.headers['token'] in (settings['PAYMENT_API_KEY'], settings['BUYER_PAYMENT_API_KEY'])
             return response(request, {'permission': 'ReadAndPay', 'networkLimit': ['Preprod'],
-                                      'usageLimited': True, 'status': 'Active'})
+                                      'usageLimited': True, 'status': 'Active',
+                                      'RemainingUsageCredits': [{'unit': '', 'amount': '10000000'}]})
         if route == '/api/v1/payment-source':
             return response(request, {'PaymentSources':[{'network':'Preprod','paymentType':'Web3CardanoV1',
                 'smartContractAddress':REAL_CONTRACT,'SellingWallets':[{'walletVkey':REAL_SELLER_KEY,

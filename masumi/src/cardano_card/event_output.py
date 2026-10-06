@@ -24,7 +24,7 @@ STAGES = {
     "submitting_result": ("📤", ">>", "SUBMITTING ORDER RESULT", "36"),
     "result_submitted": ("⏳", "...", "RESULT SAVED / WAITING FOR PAYOUT", "33"),
     "paid": ("✅", "OK", "SERVICE FEE PAID", "32"),
-    "refund_due": ("↩️", "<", "REFUND REQUEST NEEDED", "33"),
+    "refund_due": ("↩️", "<", "REFUND DUE", "33"),
     "refund_authorizing": ("↩️", "<", "AUTHORIZING REFUND", "33"),
     "refunded": ("✅", "OK", "SERVICE FEE REFUNDED", "32"),
     "manual_review": ("🛑", "!", "OPERATOR REVIEW NEEDED", "31"),

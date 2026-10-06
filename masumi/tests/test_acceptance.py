@@ -172,6 +172,7 @@ def settings_and_snapshot():
               'MASUMI_CONTRACT_ADDRESS':'contract','BUYER_ADDRESS':'buyer-address','SELLER_ADDRESS':'seller-address',
               'PAYOUT_ADDRESS':'seller-address'}
     snapshot={'schema_verified':True,'contract_address':'contract',
+              'buyer_usage_credits':[{'unit':'','amount':'10000000'}],
               'registry':[{'agent_identifier':'agent','state':'RegistrationConfirmed','seller_vkey':'seller',
                            'fee':{'Pricing':[{'unit':'','amount':'10000000'}]}}],
               'wallets':{role:{'walletVkey':role,'walletAddress':role+'-address','balance_lovelace':20000000} for role in ('seller','buyer')}}
@@ -203,7 +204,7 @@ async def test_default_preflight_missing_credentials_has_no_provider_calls(tmp_p
     assert 'BLOCKED' in capsys.readouterr().out
 
 
-@pytest.mark.parametrize('wrong',['buyer','seller','hash','network','amount','deadline',None])
+@pytest.mark.parametrize('wrong',['buyer','seller','hash','network','amount','deadline','pending_wallet','missing_confirmed_wallet',None])
 async def test_buyer_observation_identity_before_purchase(wrong):
     payment={'blockchainIdentifier':'escrow','inputHash':'input','sellerVKey':'seller','smartContractAddress':'contract',
              'RequestedFunds':[{'unit':'','amount':'10000000'}], 'rawTimes':{'payByTime':'2000000000000'}}
@@ -217,12 +218,18 @@ async def test_buyer_observation_identity_before_purchase(wrong):
     elif wrong=='network':data['PaymentSource']['network']='Mainnet'
     elif wrong=='amount':data['PaidFunds']=[{'unit':'','amount':'999'}]
     elif wrong=='deadline':data['payByTime']='1000000000000'
+    elif wrong=='pending_wallet':data['SmartContractWallet']=None
+    elif wrong=='missing_confirmed_wallet':
+        data['SmartContractWallet']=None
+        data['onChainState']='FundsLocked'
     def handler(req):
         assert req.url.path=='/api/v1/purchase/resolve-blockchain-identifier'
         return httpx.Response(200,json={'status':'success','data':data})
     async with httpx.AsyncClient(base_url='http://localhost/api/v1/',transport=httpx.MockTransport(handler)) as client:
         node=NodeRoutes(client)
-        if wrong:
+        if wrong=='pending_wallet':
+            assert await node.observe_buyer({'payment':payment},'buyer') is None
+        elif wrong:
             with pytest.raises(ValueError):await node.observe_buyer({'payment':payment},'buyer')
         else:
             assert (await node.observe_buyer({'payment':payment},'buyer'))['tx_hashes']==['a'*64]
@@ -247,3 +254,122 @@ def test_legacy_preflight_fallback_only_matches_seller_recipient():
     snapshot['wallets']['seller']['collectionAddress']='collection-address'
     with pytest.raises(ValueError,match='payout address'):
         validate_preflight(snapshot,settings)
+
+
+async def test_unconfirmed_funding_without_buyer_record_stops_before_checkout(tmp_path):
+    from cardano_card.acceptance import FundingNeedsReconciliation
+    store = Store(str(tmp_path / 'jobs.db'))
+    try:
+        runner, node, _ = make_runner(store)
+        async def rejected(route, json):
+            node.calls.append(route)
+            return httpx.Response(400, request=httpx.Request('POST', 'http://localhost/purchase/'))
+        async def absent(job):
+            return None
+        node.post = rejected
+        runner.observe_buyer = absent
+        job = await runner.start(StartRequest.model_validate(PAYLOAD))
+        with pytest.raises(FundingNeedsReconciliation):
+            await runner.step(job['id'])
+        assert not runner.engine.get(job['id'])['purchase_started']
+        evidence = runner.evidence(job)
+        assert evidence['funding_attempt']['http_status'] == 400
+        assert not evidence['acceptance_passed']
+        await runner.start(StartRequest.model_validate(PAYLOAD))
+        assert node.calls == ['/purchase/']
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize('credits', [None, [], [{'unit':'','amount':'9999999'}], [{'unit':'other','amount':'10000000'}]])
+def test_key_allowance_blocks_new_funding_but_allows_reconciliation(credits):
+    settings, snapshot = settings_and_snapshot()
+    snapshot['buyer_usage_credits'] = credits
+    with pytest.raises(ValueError, match='usage credits'):
+        validate_preflight(snapshot, settings)
+    validate_preflight(snapshot, settings, require_funding=False)
+
+
+class FakeMasonModule:
+    """Mason's v1 contract, sandbox flavour: confirm is declined with sandbox_mode."""
+    def __init__(self, result):
+        self.result, self.calls = result, []
+
+    def purchase(self, ask, max_total_usd, address, request_id=None):
+        self.calls.append(request_id)
+        return self.result
+
+    def inspect_purchase(self, request_id):
+        return self.result
+
+
+def make_mason_runner(store, case, result):
+    from cardano_card.providers import ModulePurchaser
+    escrow, node = TestEscrow(store), TestNode(store)
+    buyer = PreprodBuyer(store,node,'agent','seller',lambda data,caller:digest({'input':data,'caller':caller}),
+                        'fixture-node',expected_funds=[{'unit':'','amount':'10000000'}])
+    purchaser = ModulePurchaser.__new__(ModulePurchaser)
+    purchaser.module = FakeMasonModule(result)
+    engine = Engine(store,escrow,purchaser)
+    return AcceptanceRunner(engine,buyer,case=case,identity='fixture-node',observe_buyer=node.observe), node, escrow, purchaser.module
+
+
+async def test_mason_sandbox_decline_refunds_through_real_module_path(tmp_path):
+    store=Store(str(tmp_path/'jobs.db'))
+    try:
+        runner,node,escrow,module=make_mason_runner(store,'mason-sandbox-refund',
+            {'status':'failed','reason':'sandbox_mode','conversation_id':'c1'})
+        job=await runner.start(StartRequest.model_validate(PAYLOAD))
+        for _ in range(4):job=await runner.step(job['id'])
+        assert job['phase']=='refunded' and module.calls==[job['id']] and escrow.submissions==0
+        assert runner.evidence(job)['node_complete']
+    finally:store.close()
+
+
+async def test_mason_payout_pays_only_for_a_real_order(tmp_path):
+    store=Store(str(tmp_path/'jobs.db'))
+    try:
+        runner,node,escrow,module=make_mason_runner(store,'mason-payout',
+            {'status':'success','order_id':'ord_1','total_usd':1.32,'merchant':'Amazon','items':[{'name':'gum','qty':1}]})
+        job=await runner.start(StartRequest.model_validate(PAYLOAD))
+        for _ in range(3):job=await runner.step(job['id'])
+        assert job['phase']=='result_submitted' and escrow.submissions==1
+        store.put('escrow',job['id'],{'state':'Withdrawn'})
+        job=await runner.step(job['id'])
+        proof={'settlement_verified':True,'settlement_kind':'payout','funding_verified':True,'result_verified':True}
+        assert runner.evidence(job,proof)['acceptance_passed']
+    finally:store.close()
+
+
+async def test_mason_pending_never_refunds_or_pays(tmp_path):
+    store=Store(str(tmp_path/'jobs.db'))
+    try:
+        runner,node,escrow,module=make_mason_runner(store,'mason-sandbox-refund',
+            {'status':'pending','reason':'unknown','conversation_id':'c1','detail':'checkout confirming'})
+        job=await runner.start(StartRequest.model_validate(PAYLOAD))
+        for _ in range(4):job=await runner.step(job['id'])
+        assert job['phase']=='reconciling' and escrow.submissions==0
+        assert node.calls==['/purchase/'] and len(module.calls)==1
+    finally:store.close()
+
+
+@pytest.mark.parametrize('case,env,flags,files,message', [
+    ('mason-payout', {}, {'allow_real_card': True}, ['.env.prod', '.agentcard_tokens.prod.json'], 'AGENTCARD_ENV=prod'),
+    ('mason-payout', {'AGENTCARD_ENV': 'prod'}, {}, ['.env.prod', '.agentcard_tokens.prod.json'], 'allow-real-card'),
+    ('mason-sandbox-refund', {'AGENTCARD_ENV': 'prod'}, {}, ['.env', '.agentcard_tokens.json'], 'must not run'),
+    ('mason-sandbox-refund', {}, {'exclusive_handoff': False}, ['.env', '.agentcard_tokens.json'], 'exclusive'),
+    ('mason-sandbox-refund', {}, {}, ['.env'], 'agentcard_tokens'),
+])
+def test_mason_cases_are_bound_to_the_card_environment(tmp_path, case, env, flags, files, message):
+    from cardano_card.acceptance import check_mason_case
+    (tmp_path/'purchase.py').write_text('')
+    for name in files:(tmp_path/name).write_text('{}')
+    args=Namespace(case=case, agentcard_dir=str(tmp_path), **{'allow_real_card':False,'exclusive_handoff':True, **flags})
+    with pytest.raises(ValueError, match=message):
+        check_mason_case(args, env)
+
+
+def test_mason_sandbox_case_ready(tmp_path):
+    from cardano_card.acceptance import check_mason_case
+    for name in ('purchase.py','.env','.agentcard_tokens.json'):(tmp_path/name).write_text('{}')
+    check_mason_case(Namespace(case='mason-sandbox-refund',agentcard_dir=str(tmp_path),allow_real_card=False,exclusive_handoff=True),{})

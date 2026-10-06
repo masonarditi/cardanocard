@@ -67,6 +67,13 @@ Auto-approval: https://docs.agentcard.sh/vault/app-auto-approval.md
 - [x] Integrated with Ezra's agent: `PURCHASE_BACKEND=mason` (masumi `ModulePurchaser`) loads `agentcard/purchase.py`.
       Sandbox + fake escrow run passed 2026-10-06: job funded → real $12.41 cart → `sandbox_mode` → refunded (~50s)
 
+- [x] 2026-10-06 (Ezra's session) hardened `purchase.py` without changing the contract signature: `failed` is now
+      returned only when Agentcard says nothing was charged (`charge_status: "none"`, or `sandbox_mode` /
+      approval declines). A missing/settling checkout, `partially_placed`, a 409 without a cart, a missing
+      ledger record or an unreadable ledger all return `pending` (engine reconciles; never refunds). Ledger
+      writes are atomic. `agentcard.py` refreshes tokens atomically under the same lockfile + pending marker as
+      masumi's `SandboxTransport`. Offline tests: `agentcard/tests/test_purchase_v1.py`.
+
 ### Open decisions
 - Keep `CARD_LIMIT_USD` at $50: auto-approval covered a $12.06 ceiling despite its $10 limit, and every cart's ceiling
   is ~subtotal + $11, so a $10 cap would block everything. Keep demo purchases cheap (< $10 subtotal).

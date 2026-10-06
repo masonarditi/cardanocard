@@ -19,6 +19,8 @@ class Engine:
         self.store, self.escrow, self.purchaser, self.clock = store, escrow, purchaser, clock
         self.lock = asyncio.Lock()
 
+    RETRY_SECONDS = 120
+
     def change(self, job, phase, message):
         job["phase"] = phase
         self.store.save_job(job, message)
@@ -121,15 +123,33 @@ class Engine:
             for job in self.store.jobs():
                 if job["phase"] in {"paid", "refunded", "manual_review"} or not job["payment"]:
                     continue
+                if job["phase"] == "expired" and self.clock() > job["payment"]["externalDisputeUnlockTime"] + 86400:
+                    continue
                 try:
                     await self.advance(job)
                 except Exception:
                     # Never convert infrastructure exceptions into a definitive purchase failure.
-                    self.store.save_job(job, "Provider unavailable; retained current state for reconciliation")
+                    # Record the first failure only, so an outage does not add an event every tick.
+                    if not job.get("provider_unavailable"):
+                        job["provider_unavailable"] = True
+                        self.store.save_job(job, "Provider unavailable; retained current state for reconciliation")
+                    else:
+                        self.store.put("jobs", job["id"], job)
+
+    def retry_due(self, job, key):
+        """Resend an idempotent escrow write only if the node is idle and the last try is stale."""
+        if job.get("node_action") not in {None, "WaitingForExternalAction"}:
+            return False
+        if self.clock() - job.get(key, 0) < self.RETRY_SECONDS:
+            return False
+        job[key] = self.clock()
+        self.store.put("jobs", job["id"], job)
+        return True
 
     async def advance(self, job):
         state = await self.escrow.observe(job)
         job["escrow_state"] = state
+        job.pop("provider_unavailable", None)
         self.store.put("jobs", job["id"], job)
         phase = job["phase"]
         if state in {"ResultSubmitted", "Withdrawn"}:
@@ -149,8 +169,16 @@ class Engine:
         if state == "RefundRequested":
             definite_failure = job["outcome"] and job["outcome"]["status"] == "failed"
             if definite_failure or not job["purchase_started"]:
+                if getattr(self.escrow, "automatic_requested_refund", False):
+                    if phase != "refund_due":
+                        self.change(job, "refund_due", "Buyer refund is on-chain; waiting for automatic collection after the result deadline")
+                    return
                 if phase != "refund_authorizing":
+                    job["refund_attempted_at"] = self.clock()
                     self.change(job, "refund_authorizing", "Buyer requested refund; authorizing service-fee refund")
+                    await self.escrow.authorize_refund(job)
+                elif self.retry_due(job, "refund_attempted_at"):
+                    # A failed authorization would otherwise leave the buyer's funds locked.
                     await self.escrow.authorize_refund(job)
             elif phase != "manual_review":
                 self.change(job, "manual_review", "Refund request overlaps a possible merchant purchase; reconcile first")
@@ -173,8 +201,15 @@ class Engine:
             await self.accept(job, outcome)
             return
         # Submit-result and refund authorization requests might have succeeded before a timeout.
-        # Observe them; do not blindly resubmit or replay the merchant purchase.
-        if phase in {"submitting_result", "refund_authorizing", "refund_due", "result_submitted"}:
+        # Never replay the merchant purchase. The same result hash may be resent once the node is
+        # idle, otherwise a failed submission would leave a charged order without a payout.
+        if phase == "submitting_result":
+            if self.clock() >= job["payment"]["submitResultTime"]:
+                self.change(job, "manual_review", "Result was not submitted before the deadline; order evidence retained")
+            elif self.retry_due(job, "submit_attempted_at"):
+                await self.escrow.submit(job, job["result"])
+            return
+        if phase in {"refund_authorizing", "refund_due", "result_submitted"}:
             return
         if self.clock() >= job["payment"]["submitResultTime"] - 60:
             if job["purchase_started"]:
@@ -214,6 +249,7 @@ class Engine:
             if self.clock() >= job["payment"]["submitResultTime"]:
                 self.change(job, "manual_review", "Order confirmed after result deadline; retain evidence for settlement review")
                 return
+            job["submit_attempted_at"] = self.clock()
             self.change(job, "submitting_result", "Saved exact result bytes before submitting result hash")
             await self.escrow.submit(job, job["result"])
         elif outcome.reason in {"approval_required", "needs_input"}:

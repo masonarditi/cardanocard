@@ -200,6 +200,86 @@ async def test_submit_timeout_does_not_repurchase_or_claim_payout(engine):
     assert engine.get(job["id"])["phase"] == "submitting_result"
 
 
+async def test_failed_submit_is_retried_with_same_result_after_backoff(engine):
+    real_submit, calls = engine.escrow.submit, []
+
+    async def flaky(job, result):
+        calls.append(result)
+        if len(calls) == 1:
+            raise TimeoutError()
+        await real_submit(job, result)
+
+    engine.escrow.submit = flaky
+    now = [1_000_000.0]
+    engine.clock = lambda: now[0]
+    job = await start(engine)
+    for key in ("submitResultTime", "unlockTime", "externalDisputeUnlockTime"):
+        job["payment"][key] = now[0] + 3600
+    engine.store.put("jobs", job["id"], job)
+    job = await fund(engine, job)
+    assert job["phase"] == "submitting_result" and len(calls) == 1
+    await engine.tick()
+    assert len(calls) == 1  # backoff: no immediate resend
+    now[0] += Engine.RETRY_SECONDS
+    await engine.tick()
+    await engine.tick()
+    assert calls[0] == calls[1] and len(calls) == 2
+    assert engine.get(job["id"])["phase"] == "result_submitted"
+    assert engine.store.get("purchases", job["id"]) is not None
+
+
+async def test_unsubmitted_result_goes_to_review_at_deadline(engine):
+    async def down(*args):
+        raise TimeoutError()
+
+    engine.escrow.submit = down
+    job = await fund(engine, await start(engine))
+    engine.clock = lambda: job["payment"]["submitResultTime"]
+    await engine.tick()
+    assert engine.get(job["id"])["phase"] == "manual_review"
+
+
+async def test_failed_refund_authorization_is_retried(engine):
+    real, calls = engine.escrow.authorize_refund, []
+
+    async def flaky(job):
+        calls.append(1)
+        if len(calls) == 1:
+            raise TimeoutError()
+        await real(job)
+
+    engine.escrow.authorize_refund = flaky
+    engine.purchaser.scenario = "declined"
+    now = [1_000_000.0]
+    engine.clock = lambda: now[0]
+    job = await start(engine)
+    for key in ("submitResultTime", "unlockTime", "externalDisputeUnlockTime"):
+        job["payment"][key] = now[0] + 3600
+    engine.store.put("jobs", job["id"], job)
+    job = await fund(engine, job)
+    assert job["phase"] == "refund_due"
+    await engine.simulate(job["id"], "request_refund")
+    await engine.tick()
+    assert engine.get(job["id"])["phase"] == "refund_authorizing"
+    now[0] += Engine.RETRY_SECONDS
+    await engine.tick()
+    await engine.tick()
+    assert engine.get(job["id"])["phase"] == "refunded" and len(calls) == 2
+
+
+async def test_provider_outage_logs_one_event(engine):
+    job = await start(engine)
+
+    async def down(job):
+        raise TimeoutError()
+
+    engine.escrow.observe = down
+    before = len(engine.store.events(job["id"]))
+    for _ in range(5):
+        await engine.tick()
+    assert len(engine.store.events(job["id"])) == before + 1
+
+
 async def test_crash_recovery_uses_saved_order_and_same_id(tmp_path):
     path = str(tmp_path / "recover.db")
     store = Store(path)
@@ -268,3 +348,19 @@ def test_database_rejects_second_worker(tmp_path):
             Store(path)
     finally:
         store.close()
+
+
+async def test_v1_no_result_refund_waits_for_collection_without_authorizing(engine):
+    engine.escrow.automatic_requested_refund = True
+    engine.purchaser.scenario = 'declined'
+    job = await fund(engine, await start(engine))
+    await engine.simulate(job['id'], 'request_refund')
+    async def forbidden(job):
+        raise AssertionError('V1 authorization is only valid for disputed payments')
+    engine.escrow.authorize_refund = forbidden
+    await engine.tick()
+    assert engine.get(job['id'])['phase'] == 'refund_due'
+    assert engine.get(job['id'])['result'] is None
+    engine.store.put('escrow', job['id'], {'state': 'RefundWithdrawn'})
+    await engine.tick()
+    assert engine.get(job['id'])['phase'] == 'refunded'
