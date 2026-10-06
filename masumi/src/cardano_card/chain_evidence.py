@@ -469,6 +469,20 @@ def _ada(entry):
     return amounts['lovelace']
 
 
+def _lovelace(entry):
+    return _amounts(entry['amount']).get('lovelace', 0)
+
+
+def _conserved(inputs, outputs, fee):
+    """Every asset is conserved; lovelace pays exactly the fee. Wallet change may carry native tokens."""
+    totals = {}
+    for entries, sign in ((inputs, 1), (outputs, -1)):
+        for entry in entries:
+            for unit, quantity in _amounts(entry['amount']).items():
+                totals[unit] = totals.get(unit, 0) + sign * quantity
+    return totals.pop('lovelace', 0) == fee and not any(totals.values())
+
+
 def _strict_values(metadata, sides, escrow, datum, buyer_address, seller_address, policy, payout_address):
     """Return terminal kind only for fully attributable, unbatched ADA value flow."""
     if (metadata.get('asset_mint_or_burn_count') != 0 or metadata.get('withdrawal_count') != 0 or
@@ -479,7 +493,7 @@ def _strict_values(metadata, sides, escrow, datum, buyer_address, seller_address
         return None
     fee = int(fee)
     inputs, outputs = _normal(sides['inputs']), _normal(sides['outputs'])
-    if sum(_ada(e) for e in inputs) != sum(_ada(e) for e in outputs) + fee:
+    if not _conserved(inputs, outputs, fee):
         return None
     if buyer_address == seller_address or not buyer_address or not seller_address:
         return None
@@ -523,8 +537,8 @@ def _strict_values(metadata, sides, escrow, datum, buyer_address, seller_address
         # transaction-generator adds buyer collateral and pays ledger fees from
         # seller wallet inputs; all remaining wallet value returns as change.
         collected = sum(_ada(e) for e in outputs if e['address'] == payout_address)
-        seller_inputs = sum(_ada(e) for e in inputs if e['address'] == seller_address)
-        seller_change = sum(_ada(e) for e in outputs if e['address'] == seller_address)
+        seller_inputs = sum(_lovelace(e) for e in inputs if e['address'] == seller_address)
+        seller_change = sum(_lovelace(e) for e in outputs if e['address'] == seller_address)
         if collected != locked - protocol_fee or collected <= 0:
             return None
         if seller_change - seller_inputs != -collateral - fee:
