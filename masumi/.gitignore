@@ -4,6 +4,7 @@
 .agentcard_refresh_pending
 .agentcard-private-*
 .agentcard-response-*.json
+.preprod-*
 .venv/
 __pycache__/
 

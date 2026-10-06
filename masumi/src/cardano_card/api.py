@@ -17,6 +17,8 @@ from .providers import FakeEscrow, FakePurchaser
 from .store import Store
 from .event_output import event_line, feed_banner
 from .agentcard_bridge import AgentCardPurchaser, ReplayTransport
+from .staged_engine import StagedEngine
+from .staged_purchase import FakeStagedModule, StagedModule
 
 
 class LocalStart(BaseModel):
@@ -31,8 +33,12 @@ def configured_engine():
         raise ValueError("Only local and Preprod are supported")
     # Real merchant charging is deliberately gated until Preprod/contract acceptance tests pass.
     backend = os.getenv("PURCHASE_BACKEND", "fake")
-    if backend not in {"fake", "replay"}:
+    if backend not in {"fake", "replay", "staged_fake", "staged_module"}:
         raise ValueError("Live purchasing is not enabled in this scaffold; validate Mason's contract first")
+    if backend == "staged_module" and (mode != "preprod" or
+            os.getenv("ALLOW_EXTERNAL_VAULT_CHECKOUT") != "true" or
+            os.getenv("VAULT_OPERATOR_EXCLUSIVE") != "true"):
+        raise ValueError("External Vault checkout requires Preprod escrow and explicit execution/operator flags")
     store = Store(os.getenv("CARDANO_CARD_DB", "data/jobs.db"))
     try:
         if mode == "preprod":
@@ -40,9 +46,16 @@ def configured_engine():
                 raise ValueError("Validate the selected Payment Service against the pinned V1 SDK before Preprod use")
             from .masumi_adapter import MasumiEscrow
             escrow = MasumiEscrow(os.getenv("PAYMENT_SERVICE_URL", ""), os.getenv("PAYMENT_API_KEY", ""),
-                                 os.getenv("AGENT_IDENTIFIER", ""), os.getenv("SELLER_VKEY", ""))
+                                 os.getenv("AGENT_IDENTIFIER", ""), os.getenv("SELLER_VKEY", ""),
+                                 payout_address=os.getenv("PAYOUT_ADDRESS") or None)
         else:
             escrow = FakeEscrow(store)
+        if backend in {"staged_fake", "staged_module"}:
+            module = (FakeStagedModule(store, os.getenv("FAKE_SCENARIO", "success")) if backend == "staged_fake"
+                      else StagedModule(os.environ["MASON_STAGED_MODULE"]))
+            return StagedEngine(store, escrow, module,
+                escrow_lovelace=int(os.getenv("MASUMI_FEE_LOVELACE", "10000000")),
+                payout_address=os.getenv("PAYOUT_ADDRESS", "SIM-payout" if mode == "local" else ""))
         purchaser = (AgentCardPurchaser(store, ReplayTransport(store, os.getenv("REPLAY_SCENARIO", "success")))
                      if backend == "replay" else FakePurchaser(store, os.getenv("FAKE_SCENARIO", "success")))
         return Engine(store, escrow, purchaser)
@@ -144,7 +157,7 @@ def create_app(engine=None, token=None, background=True, poll_seconds=2, fronten
         return {"status": "available", "type": "masumi-agent",
                 "simulated_escrow": service().escrow.simulated,
                 "simulated_purchase": service().purchaser.simulated,
-                "purchase_backend": "replay" if isinstance(service().purchaser, AgentCardPurchaser) and service().purchaser.simulated else "fake" if isinstance(service().purchaser, FakePurchaser) else "external",
+                "purchase_backend": ("staged_fake" if service().purchaser.simulated else "staged_module") if isinstance(service(), StagedEngine) else "replay" if isinstance(service().purchaser, AgentCardPurchaser) and service().purchaser.simulated else "fake" if isinstance(service().purchaser, FakePurchaser) else "external",
                 "message": "Local scaffold; registry and on-chain acceptance not yet verified"}
 
     @app.get("/input_schema")
@@ -157,7 +170,7 @@ def create_app(engine=None, token=None, background=True, poll_seconds=2, fronten
         response = {"id": job["id"], "identifierFromPurchaser": job["caller_id"],
                     "phase": job["phase"], "simulated_escrow": job["simulated_escrow"],
                     "simulated_purchase": job["simulated_purchase"]}
-        if job["payment"]:
+        if job["payment"] and (not isinstance(service(), StagedEngine) or job["phase"] == "awaiting_payment"):
             response.update(job["payment"])
         else:
             # Return the reserved job ID so a caller can reconcile instead of paying twice.
@@ -169,7 +182,7 @@ def create_app(engine=None, token=None, background=True, poll_seconds=2, fronten
     async def local_start(body: LocalStart):
         if not service().escrow.simulated or not service().purchaser.simulated:
             raise HTTPException(404, "Local demo setup requires simulated providers")
-        scenarios = ReplayTransport.SCENARIOS if isinstance(service().purchaser, AgentCardPurchaser) else FakePurchaser.SCENARIOS
+        scenarios = FakeStagedModule.SCENARIOS if isinstance(service(), StagedEngine) else ReplayTransport.SCENARIOS if isinstance(service().purchaser, AgentCardPurchaser) else FakePurchaser.SCENARIOS
         if body.scenario not in scenarios:
             raise HTTPException(422, "Unsupported demo scenario")
         # Unfunded jobs cannot start purchasing while the demo scenario is being saved.

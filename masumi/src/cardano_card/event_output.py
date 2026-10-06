@@ -7,6 +7,13 @@ from zoneinfo import ZoneInfo
 
 # Labels convey the state even when color or emoji is unavailable.
 STAGES = {
+    "quote_queued": ("📝", "+", "PROMPT SAVED", "36"),
+    "preparing_quote": ("🧾", ">>", "PREPARING QUOTE", "36"),
+    "quote_reconciling": ("🔎", "?", "CHECKING QUOTE OUTCOME", "33"),
+    "awaiting_quote_approval": ("🙋", "?", "APPROVE PURCHASE QUOTE", "33"),
+    "quote_approved": ("✅", "OK", "QUOTE APPROVED", "32"),
+    "quote_rejected": ("🛑", "X", "QUOTE REJECTED", "33"),
+    "quote_expired": ("⌛", "X", "QUOTE EXPIRED", "33"),
     "creating_payment": ("📝", "+", "JOB CREATED", "36"),
     "awaiting_payment": ("⏳", "...", "WAITING FOR PAYMENT", "33"),
     "purchasing": ("🛒", ">>", "CHECKOUT STARTED", "36"),
@@ -57,6 +64,8 @@ def event_line(event, *, color=None, ascii_only=False):
         purchase = "SIMULATED" if event["simulated_purchase"] else "EXTERNAL"
         mode = f"escrow={escrow} | purchase={purchase}"
     icon, symbol, label, code = STAGES.get(event["phase"], ("•", ">", clean(event["phase"]).upper(), "36"))
+    if event["phase"] in {"paid", "refunded"} and not event["simulated_escrow"]:
+        label = "PAYOUT REPORTED BY NODE" if event["phase"] == "paid" else "REFUND REPORTED BY NODE"
     marker = f"[{symbol}]" if ascii_only else icon
     return (f"\n{stamp}  {paint(marker + ' ' + label, '1;' + code)}  {paint('[' + mode + ']', '35')}\n"
             f"  | {clean(event['message'])}\n"

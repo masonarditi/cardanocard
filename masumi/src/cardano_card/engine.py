@@ -62,12 +62,24 @@ class Engine:
         return {"id": job["id"], "status": status, "phase": phase,
                 "escrow_state": job["escrow_state"], "result": job["result"],
                 "purchase": job["outcome"], "input_schema": job["input_schema"],
-                "input_schema_hash": job["input_schema_hash"],
+                "input_schema_hash": job["input_schema_hash"], "settlement": self.settlement(job),
                 "simulated_escrow": job["simulated_escrow"], "simulated_purchase": job["simulated_purchase"],
                 "events": self.store.events(job["id"])}
 
+    def settlement(self, job):
+        payment = job.get("payment") or {}
+        unlock = payment.get("unlockTime")
+        phase = job["phase"]
+        status = ("simulated" if job["simulated_escrow"] else
+                  "node_reported" if phase in {"paid", "refunded"} else
+                  "awaiting_release" if phase == "result_submitted" else "awaiting_order")
+        return {"status": status, "payout_address": payment.get("payoutAddress"),
+                "unlock_time": unlock, "seconds_until_unlock": max(0, int(unlock - self.clock())) if unlock else None,
+                "verified_on_chain": False,
+                "note": "Node status is not independent settlement proof; use the acceptance evidence verifier."}
+
     def evidence(self, job):
-        """Explicit proof boundaries, excluding addresses, tokens and approval URLs."""
+        """Explicit proof boundaries, excluding delivery addresses, tokens and approval URLs."""
         purchase = job["outcome"] or {}
         payment = job["payment"] or {}
         return {"job_id": job["id"], "phase": job["phase"],
@@ -78,6 +90,7 @@ class Engine:
                 "order_id": purchase.get("order_id"), "merchant": purchase.get("merchant"),
                 "total_usd": purchase.get("total_usd"), "escrow_state": job["escrow_state"],
                 "result_hash": job.get("result_hash"), "node_action": job.get("node_action"),
+                "settlement": self.settlement(job),
                 "result": job["result"], "events": self.store.events(job["id"]),
                 "note": "A blockchain identifier is not a transaction hash. No chain proof is claimed when transactions are empty."}
 
@@ -98,7 +111,10 @@ class Engine:
         async with self.lock:
             if not isinstance(self.escrow, FakeEscrow):
                 raise Conflict("Simulation actions are disabled with real escrow")
-            self.escrow.action(self.get(job_id), action)
+            job = self.get(job_id)
+            if not job.get("payment") or (action == "fund" and job["phase"] != "awaiting_payment"):
+                raise Conflict("No approved payment request is ready for this action")
+            self.escrow.action(job, action)
 
     async def tick(self):
         async with self.lock:

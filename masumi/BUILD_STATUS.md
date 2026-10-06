@@ -1,49 +1,62 @@
 # Integration build status — 6 October 2026
 
-## Delivered locally
+## Current stage
 
-- Durable AgentCard bridge around `buy` and `conversation`, matching Mason's API client boundary. Mason's files and existing `purchase()` signature are unchanged.
-- Saved request fingerprints, conversation IDs, exact cart hashes, confirmation attempts and order IDs. Duplicate/concurrent requests reuse the record. Unknown writes only inspect; missing references require manual reconciliation.
-- Approval continuation only after an explicit `vault_approval_required` + `charge_status=none` response, preserving the cart/address. User approval is a request to retry that permitted confirm; the provider still decides whether approval was granted.
-- Budget and $50 card cap before confirm; explicit USD evidence; one cart only. Partial purchases and ambiguous responses never become automatic refunds.
-- Order placement and merchant confirmation are separate. A transport must supply verified order ID, currency, final total, merchant and items before fee settlement.
-- Synthetic AgentCard response replay: success, sandbox-style decline, budget rejection, approval, clarification, unknown, partial, lost-confirmation recovery. These fixtures are synthetic, not recorded authenticated API responses.
-- Browser demo, job resume, event timeline and private evidence export. The demo operates on simulated providers only. No token is embedded in HTML or browser storage.
-- Gated Preprod buyer: start, fund, status and refund. Exact V1 payload fields follow the pinned SDK source. Writes are checkpointed and uncertain attempts cannot be automatically repeated.
-- Local OpenAPI snapshot tool and credential presence/authentication checker.
-- Colored live terminal feed across all saved jobs, plus a standalone AgentCard sandbox runner with explicit handoff, mode introspection, private evidence, local token locking, and durable refresh failure protection.
-- Documented conversation recovery: `orders[].order_id` and explicit no-charge `last_checkout` denials after a lost confirmation.
+The local integration and Preprod acceptance tooling are implemented. The staged quote/approval/Vault boundary is implemented and both local terminal rehearsal paths pass. Wallet funding and on-chain registration are confirmed; real escrow payout/refund acceptance remains to be executed. No real escrow payout/refund, merchant order from this iteration or completed sandbox confirmation has been demonstrated.
 
-## Verification
+Work is in `masonarditi/cardanocard`, branch `ezra`, under `masumi/`. The archived `cardano-card` directory is reference only. The new workspace has its own virtual environment and restored private integration configuration. Existing node containers and their encrypted database volume were preserved. AgentCard credentials and rotating user tokens were deliberately not copied into the new clone.
 
-103 automated tests passed on 6 October 2026. Tests include the terminal feed, cursor/reconnection handling, sandbox-mode gates, token rotation failure recovery, documented order-ID recovery, and a mocked HTTP run through our agent to simulated refund. They are supplemented by the limited actual sandbox cart/rejection run below; full checkout and on-chain compatibility remain unverified.
+## Implemented
 
-AgentCard organization credentials were added to the root `.env`. An OAuth request returned HTTP 200 and an access token. No token was printed or saved. The response did not supply a sandbox flag. The matching sandbox credentials and linked user-token file have now been saved privately in agentcard/. After explicit exclusive handoff, the access token was refreshed once successfully and the rotated token file saved privately.
+- Durable job coordinator, immutable input/result records, one-process SQLite locking and lifecycle events. Checkpoints precede external writes; uncertain writes require reconciliation instead of automatic retries.
+- AgentCard bridge with cart persistence, explicit USD evidence, maximum-of-total/estimate/authorization-ceiling budget checks, approval continuation and conservative handling of partial or unknown orders.
+- Sandbox transport with organization-mode verification, authenticated merchant currency metadata, exclusive operator handoff, local token lock and durable refresh protection. No vault enrollment.
+- Readable live terminal feed with color, emoji and ASCII mode, plus private evidence exports.
+- Gated V1 Preprod buyer funding/refund and seller escrow adapters, bound to the exact request, funds, keys, contract and deadlines.
+- Resumable setup CLI: reviewed OpenAPI verification, wallet/balance inspection, matching registration reuse, restricted buyer/seller key creation and atomic private `.env.preprod` output. Unknown setup writes are not repeated.
+- Acceptance runner for real Preprod escrow with simulated success/payout, simulated decline/refund, or actual AgentCard sandbox/refund. Stable IDs, one request per database and existing funding checkpoints protect resume paths.
+- Independent Blockfrost evidence verification: exact compressed payment identity, datum/amount/deadline/result binding and strict native-ADA settlement checks. Supported unbatched settlement checks include wallet credentials, script spend redeemer, conserved value, fee/collateral distribution and recipient attribution. Unsupported shapes remain incomplete.
+- Runtime restoration tool preserves original node encryption/admin/database settings, skips locked databases, excludes AgentCard credentials and refuses overwrites.
 
-Browser validation covers submitting a job, simulating escrow funding, viewing order evidence, resuming a saved job, simulating payout, and completing decline/refund. No actual chain or merchant transaction has been performed.
+## Verification and environment
 
-## Next external prerequisites
+**324 automated tests pass** in the new workspace; it includes mocked node/AgentCard HTTP responses and synthetic chain fixtures. These tests do not substitute for live settlement evidence. Dependency checks pass and package imports resolve to the new clone.
 
-1. **Cardano:** the local node health and authentication now pass. The running OpenAPI matches the pinned 0.22.0 source exactly. Preprod `Web3CardanoV1` purchasing and selling wallets were discovered; both have **0 test ADA** as of this check. Agent identifier, seller key and application payment API key are not configured. Fund both test wallets, register the agent and complete live contract acceptance. The compatibility flag remains off; matching schemas alone do not prove settlement.
-2. **AgentCard:** Mason confirms the sandbox card is already linked. Receive his matching `.env` and `.agentcard_tokens.json` into `agentcard/`, keep them ignored/private, and obtain an explicit single-operator handoff before authenticated user calls. Do not run `setup_vault.py`. Token refresh rotates the shared token; reads can refresh too. If access is invalidated, stop and tell the user so Mason can re-link. The matching files are now present and ignored by Git; the user confirmed exclusive handoff for our sandbox run.
-3. **Response fixtures:** obtain sanitized real sandbox responses, including cart currency and conversation/order shapes. The public cart examples omit currency, so the bridge refuses a network cart until USD can be established through an authoritative mapping. Implement the order-tracking mapping from actual documentation/fixtures; never synthesize merchant confirmation from `order_placed`.
-4. **Acceptance:** run actual Preprod success/payout and decline/refund using simulated merchant outcomes. Then run the combined sandbox path. Capture actual transaction hashes and independently verify them.
-5. **Scope:** sandbox only. A confirm ends in `sandbox_mode` and exercises the service-fee refund path. Use explicitly simulated success to test payouts. Production merchant purchases are outside the current authorized scope.
+Read-only checks confirm the local Masumi Payment Service and PostgreSQL are running. Its 0.22.0 OpenAPI matches the pinned source fingerprint. The reviewed SDK is 1.2.0. One Preprod purchasing wallet and one selling wallet exist; the latest read-only check reports **105 test ADA in the buyer wallet and 314.749890 test ADA in the seller wallet after registration**. Cardano Card Preprod registration is confirmed and independently verified through Blockfrost. Separate capped buyer/seller keys and the agent identity are saved in ignored `.env.preprod` (0600). Schema compatibility is a wire-format gate, not settlement proof.
 
-The new `python -m cardano_card.sandbox_run` preflight now passes file-presence checks: matching credentials and user tokens are present with owner-only permissions. Subsequently, one token refresh and an actual cart request succeeded; see the run record below. The user confirmed exclusive handoff and explicitly approved export of the sample checkout identity/address/phone. See AGENTCARD_SANDBOX_RUN.md for the prepared command and the unresolved cart-currency check. The real cart-to-budget-rejection branch is verified; sandbox confirmation and on-chain settlement are not yet verified.
+## Actual sandbox evidence retained
 
-One request to the official Preprod faucet for the seller wallet returned HTTP 200 with application error `FaucetWebErrorInvalidApiKey`. It did not confirm funding. A valid faucet key or manual faucet funding is needed; no Cardano transaction has been submitted by our agent.
+- Coffee job `f5db882e-111a-4d3d-87cf-58fd09a80491`: an actual sandbox cart reported a 1,241-cent estimate but a 2,348-cent authorization ceiling against the approved 2,000-cent cap. Our bridge rejected it and completed a **simulated** fee refund. Zero confirmations, no merchant order and no Cardano transaction.
+- Gum job `81efeedd-26a1-4ab4-88c4-7d9be7beaeb2`: cart request remains uncertain, with no usable conversation ID. Saved state is `reconciling` / `cart_requested`, with zero confirmations. Resolve it using provider logs before any new sandbox checkout; the new combined acceptance runner blocks while this unresolved record remains.
 
-## Remaining scope
+The paused sandbox database and private evidence were restored into the new workspace. Current token custody still requires coordination with Mason; historical exclusive handoff does not establish a new concurrent operator arrangement.
 
-Registry discoverability, MIP-003 client conformance and signed input acknowledgements, hosted access, multiple customers, independent blockchain evidence verification, operator resolution of ambiguous writes, and x402 are unfinished. No claim of live end-to-end operation or hackathon completion is made.
+## Current staged escrow iteration
 
-Current status: local integration implemented and tested; external acceptance still pending.
+The demo now uses Cardano Preprod escrow plus Mason's existing Vault card. Base/x402, conversion and new-card issuance are deferred. `docs/INTEGRATION_PLAN.md` defines the implemented v2 handoff and defaults. Mason's `agentcard/` implementation was not modified.
 
-## Shared sandbox token operating rule
+- Prepared quotes expose items, full USD ceiling, fixed test-ADA price, expiry and payout destination. Approval precedes escrow creation; funding precedes confirmation.
+- Confirmation attempts are checkpointed before I/O. Unknown writes inspect the same job; partial/charged evidence cannot later become an automatic no-purchase refund.
+- A dedicated Preprod receiving wallet is generated and verified, recovery is ignored/owner-only, and the existing local seller's collection address is configured to it. Wallet ID and signing key are unchanged. Public node inspection confirmed the setting. No chain transaction was submitted for this change.
+- Payout configuration is checked against saved job terms before payment creation, observation and result submission. Setup and independent custom-recipient proof verification are wired to the same address.
+- Manual terminal quote approval and read-only status show payment terms and node-reported versus independently verified settlement. Both local HTTP/terminal rehearsals passed: success -> simulated payout and definitive decline -> simulated refund. Evidence is private under `data/staged-rehearsal-*.json`.
+- Blockfrost Preprod is active in the running node and an authenticated latest-block read passed. Corrected a malformed local endpoint URL; NOWNodes is not active.
+- External Vault checkout remains disabled by default. Current authenticated AgentCard readiness and the combined real merchant/escrow flow remain unproven; receive Mason's v2 module and current private credentials before enabling it.
 
-The lower-level network transport now refuses all authenticated buy/conversation/order calls without an explicit exclusive-access callback. This is a fail-closed local guard, not a cross-machine lock: the handoff must come from coordination with Mason. Do not repeatedly probe a rejected/rotated connection token or re-enroll the card. No message has been sent to Mason.
+## Next actions
 
-## Actual AgentCard sandbox result
+1. Registration/configuration is complete. Local API `http://127.0.0.1:8081` is running with real Preprod escrow and simulated purchasing; no job has been started on that runtime.
+2. Complete real escrow success/payout and decline/refund using explicitly simulated purchasing. Preserve transaction hashes and independently verified evidence. Allow for real settlement windows.
+3. Reconcile the unresolved gum attempt with Mason, receive current matching sandbox files and an exclusive handoff, then run `sandbox_mode` → real Preprod refund.
+4. Connect Mason’s staged adapter with reviewed fixtures and a specifically approved real-card demo purchase.
+5. After core acceptance: external client/MIP-003 conformance, public discoverability and caller authorization. Hosted access, multiple customers and x402 remain separate unfinished scope.
 
-At 12:30 SGT on 6 October 2026, job `f5db882e-111a-4d3d-87cf-58fd09a80491` completed a simulated service-fee refund after rejecting an actual sandbox cart. AgentCard reported an estimate of 1,241 cents and an authorization ceiling of 2,348 cents, above the requested 2,000-cent cap. The integration now checks the ceiling, persists candidate carts, and recovers validation-paused carts via reads. Zero checkout confirmations were sent; no merchant order or Cardano transaction was created. Currency remains unverified, and the sandbox_mode confirmation branch was not exercised. Rotated user tokens are saved locally; Mason needs that current file before resuming.
+See [terminal acceptance runbook](docs/PREPROD_ACCEPTANCE.md) for exact commands and completion criteria. Current work remains local; no production purchasing is enabled.
+
+## Confirmed registration
+
+Using the official Masumi skill and pinned self-hosted API, registration `cmuwcob4i001dry7mj91qzkcn` reached `RegistrationConfirmed` on Preprod. Name: Cardano Card Preprod; API: `http://127.0.0.1:8081`; fixed price: 10 test ADA. This is a local test identity, not public marketplace reachability.
+
+Transaction: `43d22b6b7e20530a65504855486d65d18e8dc7284b226145b33ea4dd3c4bec01`; fee: 0.250110 test ADA. Blockfrost confirmed the minted NFT quantity of one, initial mint transaction and ownership by the configured seller. The collection destination remains the dedicated demo receiving wallet.
+
+The original registration attempt was definitively rejected due to old Mesh cost models. A reversible Preprod-only serializer patch was verified offline in both ESM/CJS and applied to the existing container. The same failed request was reconciled and retried once; no duplicate agent was created. See `docs/LOCAL_MASUMI_SETUP.md` for the runtime patch and recreation limitations. Evidence is saved privately in `work/preprod-registration-confirmed.json`.

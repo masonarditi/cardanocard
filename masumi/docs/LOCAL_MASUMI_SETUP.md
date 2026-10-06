@@ -1,6 +1,51 @@
-# Local Masumi setup — next milestone
+# Local Masumi setup
 
 The application remains in local simulation mode. This setup adds a local Masumi Payment Service and PostgreSQL; Cardano transactions still require access to the external Preprod test network.
+
+## Existing runtime migrated from the archived checkout
+
+Work in `cardanocard/masumi/` on the `ezra` branch. The restored private
+`infra/masumi/.env` must retain the original encryption key, database password and
+admin credential. The existing Compose project is `cardano-card-masumi`, with its
+original persistent `payment_db` volume. Moving the source folder does not move or
+recreate that volume. Do not run the preparation script to generate replacement
+credentials for this database, and do not run `down -v`.
+
+The restoration command is explicit and does not start services or jobs:
+
+```sh
+.venv/bin/python scripts/restore_local_runtime.py --source /absolute/path/to/archived/cardano-card
+```
+
+It copies the node configuration exactly, keeps application defaults in local
+simulation mode, and creates a checked SQLite backup of unlocked job databases.
+An active database is skipped and reported; stop its owner before trying to migrate
+it. Existing destination databases are never replaced, so later recovery progress
+cannot be overwritten by an old snapshot. The private `work/` evidence includes
+the original sandbox request ID and unresolved attempt. Resume only that saved
+request after reconciliation; do not create a replacement checkout.
+
+AgentCard credentials and rotating tokens are deliberately excluded. Coordinate
+current token ownership with Mason before restoring anything into the sibling
+`../agentcard/` directory. Do not run `setup_vault.py`.
+
+To prepare an independent interpreter for this clone:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-local.lock -e '.[test,agentcard,masumi]'
+.venv/bin/python -m pytest -q
+.venv/bin/python scripts/check_masumi.py
+.venv/bin/python scripts/masumi_status.py --balances
+```
+
+The last two commands are read-only node/network checks. They do not fund wallets,
+register an agent, refresh AgentCard tokens or purchase anything. Check that package
+imports resolve inside this clone, rather than the archived checkout:
+
+```sh
+.venv/bin/python -c 'import cardano_card; print(cardano_card.__file__)'
+```
 
 ## Current prerequisites
 
@@ -11,7 +56,7 @@ The application remains in local simulation mode. This setup adds a local Masumi
 
 ## Start sequence
 
-Run from the repository root:
+Run from the integration directory, `cardanocard/masumi/`:
 
 ```sh
 .venv/bin/python scripts/prepare_masumi.py
@@ -51,3 +96,17 @@ docker compose --env-file infra/masumi/.env -f infra/masumi/compose.yaml stop
 Do not use `down -v` to troubleshoot: that deletes the persistent database volume.
 
 References: [official quickstart](https://github.com/masumi-network/masumi-services-dev-quickstart), [Masumi node setup](https://www.masumi.network/dev/masumi/documentation/get-started/install-masumi-node), [Masumi skill](https://www.masumi.network/skill.md).
+
+## Preprod protocol-11 compatibility repair (6 October 2026)
+
+Registration exposed a runtime incompatibility in the pinned 0.22.0 image: its Mesh 1.9.0-beta.65 Cardano SDK serializer hashes hardcoded Plutus cost models (166/175/297 entries), while the observed Preprod epoch 317 protocol-11 parameters have 332/332/350 entries. Blockfrost rejected the mint with `ScriptIntegrityHashMismatch` before ledger acceptance.
+
+The existing container now has a narrow local patch to `@meshsdk/core-cst/dist/index.js` and `index.cjs`: transactions explicitly marked `preprod` use the current Blockfrost raw cost-model arrays. Other network names retain upstream behavior. This is a runtime patch, not a new upstream image version; API schema, contracts, database, node encryption keys and wallet keys remain unchanged.
+
+- `scripts/patch_preprod_cost_models.py` generates the patch from preserved originals and a public protocol snapshot; it does not install, restart, sign, submit or retry anything.
+- `scripts/verify_preprod_cost_models.cjs` verifies synthetic transactions offline before installation. Both CJS and ESM variants were checked against an independently computed script-data hash using the current cost models; the original hash fails that comparison and non-Preprod serialized transactions are unchanged.
+- Ignored `work/mesh-cost-model-backup/` preserves original modules. `work/mesh-cost-model-patched/manifest.json` records before/after SHA256. `work/preprod-protocol-parameters.json` records the public parameter snapshot.
+- Container restart preserves this writable-layer patch. Container recreation/replacement loses it. Revalidate the snapshot against current Preprod parameters before future on-chain runs; protocol changes may require regeneration. Prefer an upstream version with correctly supplied cost models after separate compatibility testing.
+- The definitively rejected registration was reconciled: unchanged seller ADA, no registry NFT and no wallet transactions since request creation. An ignored private checkpoint records the failure. We re-queued that same database registration once after the fix, preserving its metadata and ID; no duplicate registration was created.
+
+Do not clear unknown transactions or re-queue requests merely because they are slow. This recovery was justified by a specific ledger rejection and independent wallet/asset checks.

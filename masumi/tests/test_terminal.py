@@ -105,3 +105,32 @@ def test_live_stops_on_auth_route_or_database_mismatch(status):
     with httpx.Client(base_url="http://localhost", transport=httpx.MockTransport(lambda _: httpx.Response(status))) as client:
         with pytest.raises(ValueError):
             live(client, emit=lambda _: None)
+
+
+def test_quote_approval_requires_exact_revision_and_sends_one_write():
+    from cardano_card.terminal import approve_quote
+    calls = []
+    revision = 'a' * 64
+    def handle(req):
+        calls.append(req.method)
+        if req.method == 'GET':
+            return httpx.Response(200,json={'id':'job','phase':'awaiting_quote_approval',
+                'quote':{'quote_id':'quote','currency':'USD','authorization_ceiling_cents':900,
+                         'items':[{'name':'Example','quantity':1}], 'subtotal_cents':600,'estimated_total_cents':750,
+                         'requested_funds':[{'unit':'','amount':'10000000'}]},'input_schema_hash':revision})
+        return httpx.Response(200,json={'accepted':True})
+    with httpx.Client(base_url='http://localhost',transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(ValueError,match='changed'):
+            approve_quote(client,'job','b'*64,emit=lambda _:None)
+        assert calls == ['GET']
+        lines=[]
+        assert approve_quote(client,'job',revision,emit=lines.append) == {'accepted':True}
+        assert calls == ['GET','GET','POST']
+        assert any('1 x Example' in line for line in lines)
+        assert any('10.000000 test ADA' in line for line in lines)
+
+
+def test_settlement_report_never_labels_node_status_as_verified():
+    from cardano_card.terminal import funding_lines
+    lines=funding_lines({'settlement':{'status':'node_reported','verified_on_chain':False}})
+    assert any('NOT INDEPENDENTLY VERIFIED' in line for line in lines)

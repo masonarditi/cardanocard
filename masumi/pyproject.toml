@@ -22,6 +22,8 @@ cardano-card = "cardano_card.api:main"
 cardano-card-demo = "cardano_card.buyer:main"
 cardano-card-preprod-buyer = "cardano_card.preprod_buyer:main"
 cardano-card-terminal = "cardano_card.terminal:main"
+cardano-card-preprod-setup = "cardano_card.preprod_setup:main"
+cardano-card-acceptance = "cardano_card.acceptance:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

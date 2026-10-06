@@ -2,6 +2,10 @@
 
 This command runs our actual `Engine` and durable `AgentCardPurchaser` against the AgentCard sandbox HTTP API. The service-fee escrow is explicitly simulated. It prints the colored lifecycle feed directly in the terminal and saves a private evidence bundle. It does **not** prove a Cardano escrow transaction or a merchant purchase.
 
+## Current pause after repository migration
+
+The new workspace restored the saved sandbox database and evidence, but deliberately did not copy rotating AgentCard credentials. The later gum attempt (`81efeedd-26a1-4ab4-88c4-7d9be7beaeb2`) remains `reconciling` / `cart_requested` without a usable conversation ID, with zero confirmations. Have Mason reconcile its provider logs before starting another checkout. Do not use a new request ID or database to bypass this uncertainty. The combined [Preprod acceptance runner](PREPROD_ACCEPTANCE.md) enforces that prior-state guard.
+
 ## Prerequisites
 
 1. Mason's matching sandbox credentials in `../agentcard/.env` and linked user tokens in `../agentcard/.agentcard_tokens.json`. Root organization credentials are not substituted.
@@ -31,7 +35,7 @@ The runner first exchanges **only the matching organization credentials**, then 
 
 The intended sandbox path is job → simulated funding → actual AgentCard cart → one confirmation → `sandbox_mode` with `charge_status: none` → simulated refund. The command reports PASS only when that exact provider reason and refund outcome are saved. It never auto-pays out based on unexpected sandbox order evidence.
 
-The public cart schema does **not** include an explicit currency field. The durable bridge still requires verified USD before confirmation. If a live response also omits it, the run stops at that checkpoint and reports the missing currency evidence; it does not inject USD or pretend the checkout completed. Obtain authoritative pre-confirm currency information before extending that mapping. Order tracking also remains deliberately unimplemented for this sandbox-only transport: unexpected order evidence stops for review.
+The public cart schema does **not** include an explicit currency field. The transport now checks authenticated `GET /buy/merchants` market metadata for a unique matching merchant with USD and US support. It records that source as currency evidence. If that mapping is absent or ambiguous, confirmation remains blocked; USD is never inferred from a missing field. Order tracking also remains deliberately unimplemented for this sandbox-only transport: unexpected order evidence stops for review.
 
 The conversation recovery mapping now accepts documented `orders[].order_id` and reads an explicit no-charge `last_checkout` denial after a lost confirmation. Silence, an in-progress checkout, partial orders, or unknown charges do not become refundable failures.
 
