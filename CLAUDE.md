@@ -127,6 +127,23 @@ Refresh tokens are single-use: only ONE machine may use a token file. Hand it ov
 the old copy. If a refresh fails with `invalid_refresh_token`, re-link with `setup_vault.py --connect <Mason's phone>`
 (sandbox code 111111) and check the user id (prod must stay `usr_f9fe…`, which has the real card).
 
+### Two separate Cardano Preprod setups (never mix them)
+Both use the same gitignored file paths, but every value is machine-local. Never copy these files between machines.
+
+| | Ezra's (Ezra's laptop) | Mason's (Mason's laptop) |
+|---|---|---|
+| Masumi node | compose project `cardano-card-masumi` | compose project `cardano-card-mason` (always pass `-p cardano-card-mason`) |
+| Blockfrost key (`masumi/infra/masumi/.env`) | Ezra's **Cardano Preprod** project | Mason's **Cardano Preprod** project |
+| Wallets | Ezra's buyer + seller + dedicated payout wallet | Mason's buyer + seller; payout = seller wallet |
+| Agent registration | "Cardano Card Preprod", `cmuwcob4i001dry7mj91qzkcn`, tx `43d22b6b…` | "Cardano Card Preprod (Mason)" (pending) |
+| Runtime keys (`masumi/.env.preprod`) | Ezra's | Mason's (`MASUMI_OWNER='mason'`) |
+| Agentcard tokens (`agentcard/`) | none | sandbox + prod (only machine allowed to use them) |
+
+Mason's end-to-end runs (from `masumi/`, one database per case):
+`.venv/bin/python -m cardano_card.staged_acceptance --case payout|refund|sandbox|live --request work/<input>.json
+--request-id <26 hex> --execute` (`live` = real card, also needs `--allow-real-card`). Payout lands ~45 min after
+payment creation (node minimums), refunds in minutes.
+
 ### What's left (Masumi side)
 1. Fund the Preprod selling and buying wallets (manual faucet; the faucet API key was rejected).
 2. Expose the agent publicly (tunnel) and register it on Preprod. Set `CARDANO_CARD_MODE=preprod`,
