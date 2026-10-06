@@ -136,13 +136,17 @@ async def test_ambiguous_charge_only_inspects_never_retries(engine):
     assert engine.get(job["id"])["phase"] == "result_submitted"
 
 
-async def test_unknown_then_refund_requires_review(engine):
+async def test_unknown_then_refund_keeps_reconciling_without_refund(engine):
     engine.purchaser.scenario = "unknown"
     job = await fund(engine, await start(engine))
     await engine.simulate(job["id"], "request_refund")
     await engine.tick()
-    assert engine.get(job["id"])["phase"] == "manual_review"
+    assert engine.get(job["id"])["phase"] == "reconciling"
     assert await engine.escrow.observe(job) == "RefundRequested"
+    # If the node's automatic refund lands on an unresolved purchase, an operator must look.
+    engine.store.put("escrow", job["id"], {"state": "RefundWithdrawn"})
+    await engine.tick()
+    assert engine.get(job["id"])["phase"] == "manual_review"
 
 
 async def test_external_refund_does_not_hide_uncertain_order(engine):
@@ -265,6 +269,22 @@ async def test_failed_refund_authorization_is_retried(engine):
     await engine.tick()
     await engine.tick()
     assert engine.get(job["id"])["phase"] == "refunded" and len(calls) == 2
+
+
+async def test_refund_request_during_pending_purchase_keeps_resolving(engine):
+    engine.purchaser.scenario = "unknown"
+    job = await fund(engine, await start(engine))
+    assert job["phase"] == "reconciling"
+    await engine.simulate(job["id"], "request_refund")
+    await engine.tick()
+    assert engine.get(job["id"])["phase"] == "reconciling"  # not frozen in manual_review
+    record = engine.store.get("purchases", job["id"])
+    record["outcome"] = engine.purchaser._success(job["id"])
+    engine.store.put("purchases", job["id"], record)
+    await engine.tick()
+    # The confirmed order's result is submitted, contesting the refund.
+    assert engine.get(job["id"])["result"] is not None
+    assert engine.store.get("escrow", job["id"])["state"] == "ResultSubmitted"
 
 
 async def test_provider_outage_logs_one_event(engine):

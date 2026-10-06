@@ -152,12 +152,19 @@ Mason's end-to-end runs (from `masumi/`, one database per case):
 payment creation (node minimums), refunds in minutes.
 
 ### What's left (Masumi side)
-1. Fund the Preprod selling and buying wallets (manual faucet; the faucet API key was rejected).
-2. Expose the agent publicly (tunnel) and register it on Preprod. Set `CARDANO_CARD_MODE=preprod`,
-   `MASUMI_V1_COMPATIBLE=true`, `PAYMENT_SERVICE_URL`, `PAYMENT_API_KEY`, `AGENT_IDENTIFIER`, `SELLER_VKEY`.
-3. Prove escrow → payout and escrow → refund on Preprod with `PURCHASE_BACKEND=fake`.
-4. `PURCHASE_BACKEND=mason` on Preprod: sandbox decline → refund, then `AGENTCARD_ENV=prod` cheap real order → payout.
-   Record tx hashes and order ids for the demo.
+1. ~~Fund the Preprod wallets~~ done (Ezra's node, 2026-10-06).
+2. ~~Register on Preprod~~ done: "Cardano Card Preprod" `cmuwcob4i001dry7mj91qzkcn`, loopback URL. Public exposure is
+   still only the jobs-disabled Railway endpoint (`hosted_api.py`); see `masumi/docs/HOSTED_REGISTRATION.md`.
+3. ~~Escrow → payout and escrow → refund on Preprod with simulated purchasing~~ **PASSED 2026-10-06, independently
+   verified via Blockfrost** (`cardano_card.acceptance --case payout|refund`):
+   - payout job `e1ff3dd2…`: fund `6490cc0e…4f901f8` → result `a8512d96…dd80f36d` → payout `59debcb2…33381de0`
+   - refund job `d2053b79…`: fund `8af76229…553114f6` → request `e018be24…d56e60b2a` → refund `d7a7d824…7cbf651e`
+     (buyer got 9.52 test ADA back; node 0.22 collects a no-result refund automatically after `submitResultTime`,
+     `authorize-refund` is only for disputes — the engine now waits instead of calling it)
+4. `PURCHASE_BACKEND=mason` on Preprod (`acceptance --case mason-sandbox-refund`, then `mason-payout`; commands in
+   `masumi/docs/PREPROD_ACCEPTANCE.md`). Blocked only on Agentcard credentials: Ezra's machine has none, and
+   `masumi/.env`'s client credentials are **production** (`sandbox: false`), so they must not be used for the sandbox
+   case. Needs Mason's sandbox `.env` + token file handed over exclusively, or Mason runs it on his machine.
 - Docs: https://www.masumi.network/dev/masumi/core-concepts/payments and .../refunds-and-disputes
 
 ## Rules

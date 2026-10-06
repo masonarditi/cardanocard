@@ -95,6 +95,24 @@ def test_409_without_cart_is_reconciled(api):
     assert out["status"] == "success"
 
 
+def test_failed_order_without_no_charge_evidence_stays_pending(api):
+    out = run(api, (502, {}), convs=[{"turn_in_progress": False, "orders": [{"order_id": "o", "status": "failed"}],
+                                      "last_checkout": {"charge_status": "captured"}}])
+    assert out["status"] == "pending"
+
+
+def test_failed_order_with_no_charge_fails(api):
+    out = run(api, (502, {}), convs=[{"turn_in_progress": False, "orders": [{"order_id": "o", "status": "failed"}],
+                                      "last_checkout": {"charge_status": "none"}}])
+    assert out["status"] == "failed"
+
+
+@pytest.mark.parametrize("code", [400, 408, 429])
+def test_any_4xx_after_confirm_reads_the_conversation(api, code):
+    out = run(api, (code, {}), convs=[{"turn_in_progress": False, "orders": [{"order_id": "o3"}]}])
+    assert out["status"] == "success" and out["order_id"] == "o3"
+
+
 def test_order_placed_without_id_reads_conversation(api):
     out = run(api, (200, {"status": "order_placed"}), convs=[{"turn_in_progress": False, "orders": [{"order_id": "o2"}]}])
     assert out["order_id"] == "o2"
@@ -131,12 +149,28 @@ def test_token_refresh_is_atomic_and_locked(tmp_path, monkeypatch):
     monkeypatch.setattr(agentcard, "LOCKFILE", tmp_path / "lock")
     monkeypatch.setattr(agentcard, "REFRESH_MARKER", tmp_path / "pending")
     sent = []
+    monkeypatch.setattr(agentcard, "org_token", lambda: "org")
     monkeypatch.setattr(agentcard, "org", lambda m, p, json: sent.append(json) or
                         {"access_token": "new", "refresh_token": "r2", "expires_in": 3600})
     assert agentcard.user_token() == "new"
     assert agentcard.user_token() == "new" and len(sent) == 1
     saved = json.loads(tokens.read_text())
     assert saved["refresh_token"] == "r2" and (tokens.stat().st_mode & 0o777) == 0o600
+    assert not (tmp_path / "pending").exists()
+
+
+def test_org_token_failure_does_not_leave_a_refresh_marker(tmp_path, monkeypatch):
+    tokens = tmp_path / "tokens.json"
+    tokens.write_text(json.dumps({"user_id": "u", "access_token": "a", "refresh_token": "r1", "expires_at": 0}))
+    monkeypatch.setattr(agentcard, "TOKENS", tokens)
+    monkeypatch.setattr(agentcard, "LOCKFILE", tmp_path / "lock")
+    monkeypatch.setattr(agentcard, "REFRESH_MARKER", tmp_path / "pending")
+
+    def down():
+        raise agentcard.ApiError(503, {})
+    monkeypatch.setattr(agentcard, "org_token", down)
+    with pytest.raises(agentcard.ApiError):
+        agentcard.user_token()
     assert not (tmp_path / "pending").exists()
 
 

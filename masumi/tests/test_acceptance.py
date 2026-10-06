@@ -327,6 +327,21 @@ async def test_mason_sandbox_decline_refunds_through_real_module_path(tmp_path):
     finally:store.close()
 
 
+@pytest.mark.parametrize('reason', ['no_cart', 'over_budget', 'error', 'declined'])
+async def test_mason_sandbox_case_requires_sandbox_mode_specifically(tmp_path, reason):
+    store=Store(str(tmp_path/'jobs.db'))
+    try:
+        runner,node,escrow,module=make_mason_runner(store,'mason-sandbox-refund',
+            {'status':'failed','reason':reason,'conversation_id':'c1'})
+        job=await runner.start(StartRequest.model_validate(PAYLOAD))
+        for _ in range(4):job=await runner.step(job['id'])
+        assert job['phase']=='refunded'  # the buyer is still refunded...
+        proof={'settlement_verified':True,'settlement_kind':'refund','funding_verified':True}
+        assert not runner.evidence(job,proof)['node_complete']  # ...but it is not the sandbox proof we wanted
+        assert not runner.evidence(job,proof)['acceptance_passed']
+    finally:store.close()
+
+
 async def test_mason_payout_pays_only_for_a_real_order(tmp_path):
     store=Store(str(tmp_path/'jobs.db'))
     try:

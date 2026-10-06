@@ -151,6 +151,18 @@ class AcceptanceRunner:
             await self.buyer.refund(job_id, self.engine.public(job))
         return self.engine.get(job_id)
 
+    def mason_reason(self, job):
+        """Mason's saved failure reason (normalize drops it). Read-only; nothing is confirmed or sent."""
+        outcome = job.get("outcome") or {}
+        module = getattr(self.engine.purchaser, "module", None)
+        if outcome.get("status") != "failed" or module is None:
+            return None
+        try:
+            raw = module.inspect_purchase(job["id"])
+        except Exception:
+            return None
+        return raw.get("reason") if isinstance(raw, dict) and raw.get("status") == "failed" else None
+
     def evidence(self, job, chain=None):
         result = self.engine.evidence(job)
         record = self.store.get("agentcard_purchases", job["id"]) or {}
@@ -158,7 +170,7 @@ class AcceptanceRunner:
         outcome = job.get("outcome") or {}
         scenario_matched = {
             "sandbox-refund": record.get("provider_reason") == "sandbox_mode",
-            "mason-sandbox-refund": outcome.get("status") == "failed",
+            "mason-sandbox-refund": self.mason_reason(job) == "sandbox_mode",
             "mason-payout": outcome.get("status") == "success" and not str(outcome.get("order_id", "")).startswith("SIM-"),
         }.get(self.case, True)
         node_complete = job["phase"] == expected and scenario_matched

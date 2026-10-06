@@ -4,9 +4,27 @@
 
 Railway deployment `031ec0b3-874f-41ef-bca0-c363995476e8` succeeded in eztramble's Projects. Public health and schema are verified at https://cardanocard-preprod-production.up.railway.app. This endpoint explicitly disables jobs; it has no payment/card credentials or connection to the private local runtime. Masumi accepted hosted Preprod agent `544fcfcd-29e5-4453-9a04-ac6554956d56` under ezzycoin. Both SaaS and registry remain RegistrationRequested, with no transaction, agent identifier or processing timestamp. Canonical registry pricing is correctly Dynamic; only the SaaS copy displays Free. The completion API's funding message is generic, although independent Blockfrost checks found no history for either hosted registration wallet. Do not fund or recreate the registration blindly. The read-only readiness CLI verifies identity/payout/source/pricing and distinguishes registration from execution readiness. **341 tests pass.** See [hosted registration](docs/HOSTED_REGISTRATION.md), the [V2 implementation checklist](docs/HOSTED_V2_PLAN.md), and the [unsent support note](docs/MASUMI_REGISTRATION_SUPPORT.md).
 
+## Live Preprod acceptance — PASSED (6 October 2026, ~20:45 SGT)
+
+Both simulated-purchase cases completed on real Preprod escrow and were verified independently through Blockfrost
+(`proof_scope: indexed_unbatched_ada_settlement`, funding + result + payout/refund bound to the exact datum, redeemer, addresses and value flow).
+
+| case | job | funding tx | step tx | settlement tx |
+|---|---|---|---|---|
+| payout (`paid`) | `e1ff3dd2-c471-444f-9914-b7c6eff49ecb` | `6490cc0edd130efb494ca30c7c4871f3394127401272d9f1bf6f883cb4f901f8` | result `a8512d964f62a783811e9cd5801b037c8e4704b1799c6ef62fb62974dd80f36d` | payout `59debcb26d3909375491b07b8926e9c95bf5e47ae436c313dc68336f33381de0` (8.56 test ADA to the payout wallet) |
+| refund (`refunded`) | `d2053b79-baed-4e54-9dcc-7ab90255b212` | `8af76229a5bd3aab65e1427085a70f9dfcb216139a9f2c8b355e0ed4553114f6` | refund request `e018be24bbf528d22d0aa0de56823a4bf3cf06399b11f7fbe789554d56e60b2a` | refund `d7a7d824ea9faaed063c5af10a6942d9d5177b1f468cea05faf71aa57cbf651e` (9.52 test ADA back to the buyer) |
+
+Evidence: `work/preprod-evidence/<job>.json` (private). Payout landed ~47 minutes after payment creation; the refund was
+collected by the node ~11 minutes after `submitResultTime`. Two findings from these runs are fixed in code: the node
+rejects `authorize-refund` for a non-disputed payment (refunds auto-collect; engine now waits in `refund_due`), and the
+strict verifier rejected real wallet change that carried a test token (now requires per-asset conservation instead).
+Both local HTTP flows (fake backend: success → paid, declined → refunded; staged_fake: success, declined, over_budget → quote_rejected) also pass end to end. **382 masumi + 52 agentcard tests pass.**
+
+Still unproven: a real Agentcard checkout on Preprod escrow (`mason-sandbox-refund`, `mason-payout`) — needs Mason's credentials; see CLAUDE.md "What's left".
+
 ## Current stage
 
-The local integration and Preprod acceptance tooling are implemented. The staged quote/approval/Vault boundary is implemented and both local terminal rehearsal paths pass. Wallet funding and on-chain registration are confirmed; real escrow payout/refund acceptance remains to be executed. No real escrow payout/refund, merchant order from this iteration or completed sandbox confirmation has been demonstrated.
+The local integration and Preprod acceptance tooling are implemented and the escrow payout/refund legs are proven live (above). The staged quote/approval/Vault boundary is implemented and both local terminal rehearsal paths pass. Wallet funding and on-chain registration are confirmed; real escrow payout/refund acceptance remains to be executed. No real escrow payout/refund, merchant order from this iteration or completed sandbox confirmation has been demonstrated.
 
 Work is in `masonarditi/cardanocard`, branch `ezra`, under `masumi/`. The archived `cardano-card` directory is reference only. The new workspace has its own virtual environment and restored private integration configuration. Existing node containers and their encrypted database volume were preserved. AgentCard credentials and rotating user tokens were deliberately not copied into the new clone.
 

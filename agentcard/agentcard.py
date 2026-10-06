@@ -62,8 +62,9 @@ def save_tokens(user_id, d):
 
 
 # Shared with masumi's SandboxTransport: one lockfile and one "refresh in flight" marker per directory.
-LOCKFILE = HERE / ".agentcard_tokens.lockfile"
-REFRESH_MARKER = HERE / ".agentcard_refresh_pending"
+# Sandbox keeps the names SandboxTransport uses; prod gets its own so a stale sandbox marker can't block it.
+LOCKFILE = HERE / (".agentcard_tokens.prod.lockfile" if PROD else ".agentcard_tokens.lockfile")
+REFRESH_MARKER = HERE / (".agentcard_refresh_pending.prod" if PROD else ".agentcard_refresh_pending")
 
 
 def user_token():
@@ -79,6 +80,7 @@ def user_token():
         if time.time() > t["expires_at"] - 60:
             if REFRESH_MARKER.exists():
                 raise RuntimeError("an earlier token refresh did not finish; reconcile before refreshing again")
+            org_token()  # fetch the org token first: a failure here never spends the refresh token
             REFRESH_MARKER.write_text(json.dumps({"started_at": time.time()}))
             save_tokens(t["user_id"], org("POST", "/api/v2/connect/refresh", json={"refresh_token": t["refresh_token"]}))
             REFRESH_MARKER.unlink()

@@ -180,6 +180,13 @@ class Engine:
                 elif self.retry_due(job, "refund_attempted_at"):
                     # A failed authorization would otherwise leave the buyer's funds locked.
                     await self.escrow.authorize_refund(job)
+            elif phase in {"purchasing", "reconciling", "processing"}:
+                # Keep resolving the purchase. A confirmed order still submits its result, which
+                # disputes the refund instead of letting it auto-collect after the deadline.
+                outcome = await self.purchaser.inspect(job["id"])
+                await self.accept(job, outcome)
+            elif phase == "submitting_result":
+                await self.retry_submit(job)
             elif phase != "manual_review":
                 self.change(job, "manual_review", "Refund request overlaps a possible merchant purchase; reconcile first")
             return
@@ -204,10 +211,7 @@ class Engine:
         # Never replay the merchant purchase. The same result hash may be resent once the node is
         # idle, otherwise a failed submission would leave a charged order without a payout.
         if phase == "submitting_result":
-            if self.clock() >= job["payment"]["submitResultTime"]:
-                self.change(job, "manual_review", "Result was not submitted before the deadline; order evidence retained")
-            elif self.retry_due(job, "submit_attempted_at"):
-                await self.escrow.submit(job, job["result"])
+            await self.retry_submit(job)
             return
         if phase in {"refund_authorizing", "refund_due", "result_submitted"}:
             return
@@ -230,6 +234,13 @@ class Engine:
                 return
             # Submission errors must leave the confirmed purchase evidence and submission checkpoint intact.
             await self.accept(job, result)
+
+    async def retry_submit(self, job):
+        # Leave a minute for the transaction to land before the on-chain deadline.
+        if self.clock() >= job["payment"]["submitResultTime"] - 60:
+            self.change(job, "manual_review", "Result was not submitted before the deadline; order evidence retained")
+        elif self.retry_due(job, "submit_attempted_at"):
+            await self.escrow.submit(job, job["result"])
 
     async def accept(self, job, raw):
         try:

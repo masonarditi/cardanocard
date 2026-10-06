@@ -23,3 +23,6 @@ data/
 .agentcard_tokens.prod.json
 .purchases.json
 .purchase_jobs*
+.agentcard_refresh_pending*
+.agentcard_tokens*.tmp
+.purchases*.tmp

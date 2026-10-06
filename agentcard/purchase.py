@@ -50,7 +50,9 @@ def _order_from_conversation(conversation_id, cart, polls=20):
                 return _pending(conversation_id, detail="several orders placed; reconcile manually")
             if orders and orders[0].get("order_id"):
                 if orders[0].get("status") == "failed":
-                    return _fail("declined", decline_code="funding_failed", conversation_id=conversation_id)
+                    if last.get("charge_status") == "none":
+                        return _fail("declined", decline_code="funding_failed", conversation_id=conversation_id)
+                    return _pending(conversation_id, detail="order failed after placement; check the charge")
                 return _success(orders[0]["order_id"], cart)
             if last.get("status") == "placed" and last.get("order_id"):
                 return _success(last["order_id"], cart)
@@ -84,10 +86,9 @@ def _purchase(ask, max_total_usd, address, rec, request_id):
         return _order_from_conversation(cid, cart)
     if code == 409 and r.get("cart"):
         return _fail("price_changed", detail=r.get("error"), cart=r.get("cart"), conversation_id=cid)
-    if code >= 500 or code == 409:
-        return _order_from_conversation(cid, cart)
     if code >= 400:
-        return _fail("error", http_status=code, detail=r, conversation_id=cid)
+        # After a confirm, no HTTP error proves nothing was charged (408, 429, proxy errors...).
+        return _order_from_conversation(cid, cart)
     if r.get("status") == "partially_placed":
         return _pending(cid, detail="partially placed; reconcile manually")
     if r.get("order_id"):
