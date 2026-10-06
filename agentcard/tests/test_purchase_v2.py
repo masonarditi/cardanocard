@@ -10,9 +10,10 @@ import purchase_v2 as v2  # noqa: E402
 ADDRESS = {"street": "1 Test St", "city": "San Francisco", "state": "CA", "zip": "94123", "phone": "+14155550100",
            "name": "Test Buyer"}
 CART = {"hash": "h1", "merchant": "retail", "merchant_name": "Amazon", "serviceFeesCents": 0, "tipCents": 0,
-        "items": [{"name": "Trident gum", "qty": 1, "priceCents": 132}], "totalCents": 132, "totalIsEstimate": True,
-        "approvedCeilingCents": 1206}
-QUOTED = (200, {"conversation_id": "conv_1", "status": "needs_input", "cart": CART})
+        "items": [{"name": "Trident gum", "qty": 1, "priceCents": 132, "product_id": "B0GUM"}], "totalCents": 132,
+        "totalIsEstimate": True, "approvedCeilingCents": 1206}
+CATALOG = {"items": [{"id": "B0GUM", "name": "Trident gum", "priceCents": 132}]}
+QUOTED = (200, {"conversation_id": "conv_1", "status": "needs_input", "cart": CART, "catalog": CATALOG})
 PLACED = (200, {"conversation_id": "conv_1", "status": "order_placed", "order_id": "ord_1", "charge_status": "settled"})
 SETTLED = {"turn_in_progress": False, "orders": [{"order_id": "ord_1", "status": "settled", "total_cents": 270,
                                                   "merchant_name": "Amazon", "placed_at": "2026-10-06T10:00:00Z"}]}
@@ -93,9 +94,12 @@ def test_approval_landing_is_found_by_inspect(api):
     ({**CART, "approvedCeilingCents": None}, "ambiguous_amount"),
     ({**CART, "totalCents": "132"}, "ambiguous_amount"),
     ({**CART, "merchant_currency": "cad"}, "unsupported_currency"),
+    ({**CART, "items": CART["items"] + [{"name": "Coffee from an earlier job", "qty": 1, "priceCents": 1211,
+                                         "product_id": "B0COFFEE"}]}, "unexpected_items"),
+    ({**CART, "items": [{**CART["items"][0], "product_id": None}]}, "unexpected_items"),
 ])
 def test_unconfirmable_carts_block_confirmation(api, cart, reason):
-    out = prepare(api, response=(200, {"conversation_id": "conv_1", "cart": cart}))
+    out = prepare(api, response=(200, {"conversation_id": "conv_1", "cart": cart, "catalog": CATALOG}))
     assert (out["status"], out["reason"]) == ("failed_no_purchase", reason)
     assert v2.confirm_purchase("job_1", out["quote"]["quote_id"]) == out and not api.confirms()
 
@@ -113,6 +117,15 @@ def test_changed_cart_needs_fresh_approval(api):
     api.convs.append(SETTLED)
     assert v2.confirm_purchase("job_1", new)["status"] == "confirmed"
     assert [c["confirm"] for c in api.confirms()] == ["h1", "h2"]
+
+
+def test_changed_cart_with_different_items_is_blocked(api):
+    quote_id = prepare(api)["quote"]["quote_id"]
+    swapped = {**CART, "hash": "h2", "items": [{**CART["items"][0], "product_id": "B0OTHER"}]}
+    api.buys.append((409, {"error": "price_changed", "cart": swapped}))
+    out = v2.confirm_purchase("job_1", quote_id)
+    assert (out["status"], out["reason"]) == ("failed_no_purchase", "unexpected_items")
+    assert v2.confirm_purchase("job_1", quote_id) == out and len(api.confirms()) == 1
 
 
 def test_timeout_is_inspected_never_repeated(api):

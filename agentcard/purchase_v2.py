@@ -14,6 +14,8 @@ from purchase import NO_QUESTIONS
 VERSION = 2
 CARD_LIMIT_CENTS = 5000
 LEDGER = HERE / (".purchase_jobs.prod.json" if PROD else ".purchase_jobs.json")
+# Agentcard keeps one Amazon cart per user, so items from earlier conversations can still be in it.
+EMPTY_CART = "Start from an empty cart: remove anything already in it, then add only what this message asks for."
 FINAL = {"confirmed", "failed_no_purchase", "partial"}
 
 
@@ -45,17 +47,20 @@ def _detail(r):
     return r.get("error") or r.get("reply") if isinstance(r, dict) else r
 
 
-def _quote(rec, cart):
+def _quote(rec, cart, allowed):
     """Saves the cart as the job's current quote; returns the reason it can't be confirmed, if any."""
     total, estimate, ceiling = (cart.get(k) for k in ("totalCents", "estimatedTotalCents", "approvedCeilingCents"))
     currency = str(cart.get("merchant_currency") or cart.get("currency") or "usd").lower()
     rec["quote"] = {
         "quote_id": "q_" + hashlib.sha256(f"{rec['job_id']}:{cart['hash']}".encode()).hexdigest()[:16],
         "cart_hash": cart["hash"], "merchant": cart.get("merchant_name") or cart.get("merchant"),
-        "items": [{"name": i.get("name"), "qty": i.get("qty", 1), "price_cents": i.get("priceCents")}
+        "items": [{"name": i.get("name"), "qty": i.get("qty", 1), "price_cents": i.get("priceCents"),
+                   "product_id": i.get("product_id")}
                   for i in cart.get("items", [])],
         "currency": currency, "subtotal_cents": total, "estimated_total_cents": estimate, "ceiling_cents": ceiling,
         "total_is_estimate": cart.get("totalIsEstimate"), "budget_cents": rec["budget_cents"]}
+    if not cart.get("items") or any(i.get("product_id") not in allowed for i in cart["items"]):
+        return "unexpected_items"
     amounts = [a for a in (total, estimate, ceiling) if a is not None]
     if (total is None or any(type(a) is not int or a < 0 for a in amounts)
             or (cart.get("totalIsEstimate", False) is not False and ceiling is None)):
@@ -66,8 +71,8 @@ def _quote(rec, cart):
         return "over_budget"
 
 
-def _quoted(rec, cart, status="prepared", **extra):
-    problem = _quote(rec, cart)
+def _quoted(rec, cart, allowed, status="prepared", **extra):
+    problem = _quote(rec, cart, allowed)
     if problem:
         return _out(rec, "failed_no_purchase", reason=problem, quote=rec["quote"])
     return _out(rec, status, quote=rec["quote"], **extra)
@@ -86,7 +91,7 @@ def prepare_purchase(job_id: str, intent: str, max_total_usd, address: dict) -> 
            "conversation_id": None, "quote": None, "attempts": [], "order": None, "outcome": None}
     _save(rec)
     try:
-        code, r = buy({"ask": f"{intent}. {NO_QUESTIONS}", "delivery_address": address})
+        code, r = buy({"ask": f"{EMPTY_CART} {intent}. {NO_QUESTIONS}", "delivery_address": address})
     except Exception as e:
         return _out(rec, "failed_no_purchase", reason="error", detail=repr(e))
     rec["conversation_id"] = r.get("conversation_id") if isinstance(r, dict) else None
@@ -99,7 +104,7 @@ def prepare_purchase(job_id: str, intent: str, max_total_usd, address: dict) -> 
         if r.get("status") == "needs_input":
             return _out(rec, "needs_input", reason="needs_input", message=r.get("reply"))
         return _out(rec, "failed_no_purchase", reason="no_cart", detail=r.get("reply"))
-    return _quoted(rec, cart)
+    return _quoted(rec, cart, {i.get("id") for i in (r.get("catalog") or {}).get("items") or []} - {None})
 
 
 def confirm_purchase(job_id: str, quote_id: str) -> dict:
@@ -121,7 +126,8 @@ def confirm_purchase(job_id: str, quote_id: str) -> dict:
         return _inspect(rec, detail=repr(e))
     if code == 409 and isinstance(r, dict) and r.get("cart"):
         attempt["state"] = "no_charge"
-        return _quoted(rec, r["cart"], "approval_required", reason="cart_changed")
+        approved = {i["product_id"] for i in rec["quote"]["items"]}
+        return _quoted(rec, r["cart"], approved, "approval_required", reason="cart_changed")
     if code >= 500 or code == 409:
         return _inspect(rec, detail=_detail(r))
     if code >= 400:
@@ -142,7 +148,7 @@ def confirm_purchase(job_id: str, quote_id: str) -> dict:
                     quote=rec["quote"])
     if r.get("charge_status") == "none" and decline and decline != "in_progress":
         attempt["state"] = "no_charge"
-        return _out(rec, "failed_no_purchase", reason="declined", decline_code=decline, detail=r.get("reply"))
+        return _out(rec, "failed_no_purchase", reason="declined", decline_code=decline)
     return _inspect(rec)
 
 
