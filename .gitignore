@@ -1,0 +1,22 @@
+.env
+.agentcard_tokens.json
+.agentcard_tokens*.json
+.agentcard_refresh_pending
+.agentcard-private-*
+.venv/
+__pycache__/
+
+# Local Masumi development
+.env.*
+!.env.example
+.pytest_cache/
+*.egg-info/
+data/
+*.db
+*.db-shm
+*.db-wal
+*.lockfile
+.DS_Store
+/work/
+.env.prod
+.agentcard_tokens.prod.json
