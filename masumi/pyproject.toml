@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling>=1.25,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cardano-card"
+version = "0.1.0"
+description = "Masumi purchasing-agent integration, starting with a local simulator"
+requires-python = ">=3.11"
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "pydantic>=2.9,<3", "httpx>=0.27,<1", "python-dotenv>=1,<2"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9", "pytest-asyncio>=0.24,<1"]
+agentcard = ["requests>=2.31,<3"]
+masumi = ["masumi @ git+https://github.com/masumi-network/pip-masumi.git@5a54f5e0755a1b7de52ae1823d767fe442b1ac13"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[project.scripts]
+cardano-card = "cardano_card.api:main"
+cardano-card-demo = "cardano_card.buyer:main"
+cardano-card-preprod-buyer = "cardano_card.preprod_buyer:main"
+cardano-card-terminal = "cardano_card.terminal:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
