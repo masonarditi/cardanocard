@@ -38,6 +38,8 @@ request is saved to `agentcard/.purchases.json`; repeating it returns the saved 
 - `purchase.py` — the contract. `/buy` with ask + delivery_address → check `cart.totalCents` ≤ cap → confirm
   `cart.hash` with `payment_source: "vault"`. Never resend a timed-out confirm; read the conversation instead.
 - `test_purchase.py` — sandbox smoke test. Expected: case 1 `sandbox_mode`, case 2 `over_budget`.
+- `purchase_v2.py` — v2 interface for Ezra's coordinator: `prepare_purchase` / `confirm_purchase` / `inspect_purchase`.
+  Spec, outcomes, real response shapes and integration: `agentcard/PURCHASE_V2.md`. Offline tests: `agentcard/tests/`.
 
 Base URL `https://api.agentcard.sh` (sandbox vs production is set by which credentials are used).
 Docs index: https://docs.agentcard.sh/llms.txt — Purchase API: https://docs.agentcard.sh/vault/integrations/ecommerce-apis/purchase-api.md
@@ -87,6 +89,9 @@ Auto-approval: https://docs.agentcard.sh/vault/app-auto-approval.md
   (free shipping, no tax), card charged $2.70 (Agentcard fee + processing = $1.38). REST
   `/buy/v1/merchants/retail/orders/{id}/track` is retired (410); ask `/buy` on the same conversation_id instead.
 - Vault purchases don't appear on the dashboard's Transactions page (it only lists org-issued cards).
+- Agentcard keeps ONE Amazon cart per user across conversations: a declined job's items reappear in the next cart.
+  v2 asks `/buy` to empty the cart first and blocks items not in the turn's `catalog` (`unexpected_items`).
+- A declined confirm can have `status: "needs_input"`; trust only `decline_code` + `charge_status` (`none` = no charge).
 - Card budget is $50: `purchase()` caps every cart at `min(max_total_usd, CARD_LIMIT_USD=50)`. Set the
   Masumi price tier to match.
 
