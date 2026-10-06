@@ -67,10 +67,11 @@ class PreprodBuyer:
         normalized = [int(stamp) // 1000 if int(stamp) > 100_000_000_000 else int(stamp) for stamp in raw]
         if not self.clock() + 60 < normalized[0] < normalized[1] <= normalized[2] <= normalized[3]:
             raise ValueError("Payment deadline expired or invalid")
+        # Node 0.22 rejects Amounts for a fixed-price agent; the fee was already checked against expected_funds above.
         return {"identifierFromPurchaser": validated.identifier_from_purchaser,
                 "network": "Preprod", "sellerVkey": self.seller_vkey, "paymentType": "Web3CardanoV1",
                 "blockchainIdentifier": terms["blockchainIdentifier"], "agentIdentifier": self.agent_identifier,
-                "inputHash": expected, "Amounts": funds, **dict(zip(TIMES, raw))}
+                "inputHash": expected, **dict(zip(TIMES, raw))}
 
     async def _once(self, key, route, payload):
         async with self.lock:
@@ -85,6 +86,10 @@ class PreprodBuyer:
             self.store.put("buyer_writes", key, record)
             try:
                 response = await self.client.post(route, json=payload)
+                if response.status_code >= 400:
+                    # Keep the node's own error text (no payload or credentials) so a rejection can be diagnosed.
+                    record["node_error"] = str((response.json().get("error") or {}).get("message"))[:300]
+                    self.store.put("buyer_writes", key, record)
                 response.raise_for_status()
                 data = response.json()
                 if data.get("status") != "success":
