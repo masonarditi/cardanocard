@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 HERE = Path(__file__).parent
 PROD = os.environ.get("AGENTCARD_ENV") == "prod"
-load_dotenv(HERE / (".env.prod" if PROD else ".env"))
+load_dotenv(HERE / (".env.prod" if PROD else ".env"), override=True)
 BASE = "https://api.agentcard.sh"
 TOKENS = HERE / (".agentcard_tokens.prod.json" if PROD else ".agentcard_tokens.json")
 _org = {"token": None, "exp": 0}

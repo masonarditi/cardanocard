@@ -9,20 +9,24 @@ the purchase fails."
 
 ## Repo layout
 - `agentcard/` — Agentcard side (owner: Mason). Exposes `purchase()`.
-- `masumi/` — Masumi agent (owner: Ezra). Calls `purchase()` inside `process_job`.
+- `masumi/` — Masumi agent (owner: Ezra). Calls `purchase()` through `ModulePurchaser` (`PURCHASE_BACKEND=mason`).
 
 ## The contract (do not change without telling both people)
 
 ```python
 from purchase import purchase
-purchase(ask: str, max_total_usd: float, address: dict) -> dict
+purchase(ask: str, max_total_usd: float, address: dict, request_id: str = None) -> dict
+inspect_purchase(request_id: str) -> dict   # read-only; never starts or confirms a checkout
 # success: {"status": "success", "order_id", "total_usd", "merchant", "items"}
-# failure: {"status": "failed", "reason", ...}
+# failure: {"status": "failed", "reason", ...}   (no charge happened)
 #   reasons: no_cart, over_budget, needs_input, declined, approval_required,
 #            sandbox_mode, price_changed, error
+# pending: {"status": "pending", "reason": "unknown", "conversation_id", "detail"}
+#   (confirm sent but outcome unknown; call inspect_purchase later, never refund yet)
 # address: {"street","city","state","zip","phone","name"} (+address2). US/Canada only.
 ```
-Any `failed` → Masumi side refunds the buyer's escrow. `purchase()` never raises.
+Any `failed` → Masumi side refunds the buyer's escrow. `purchase()` never raises. With a `request_id`, each
+request is saved to `agentcard/.purchases.json`; repeating it returns the saved result instead of buying again.
 
 ## Agentcard side (`agentcard/`)
 - `agentcard.py` — platform token (client credentials, cached 1h, rate limit 30/5min), user token with
@@ -43,7 +47,8 @@ Auto-approval: https://docs.agentcard.sh/vault/app-auto-approval.md
 - [x] Code written, compiles; sandbox credentials verified (token exchange works). Code was missing from the
       repo on 2026-10-06 and was rebuilt from the docs. Setup: `cd agentcard && python3 -m venv .venv &&
       .venv/bin/pip install -r requirements.txt`; `.env` holds AGENTCARD_CLIENT_ID / AGENTCARD_CLIENT_SECRET
-- [x] `setup_vault.py` run with test card 4242 4242 4242 4242 (sandbox user `usr_acdbe5f1ee4d64d433f80033`)
+- [x] Sandbox user is now `usr_31f5c35616a38795b45ea5ec` (re-linked 2026-10-06 via `--connect` with Mason's phone,
+      code 111111, after the shared refresh token was used up). No vault card needed: confirm still returns `sandbox_mode`
 - [x] `test_purchase.py` passes in sandbox (case 1 `sandbox_mode` on a $12.41 cart, case 2 `over_budget`; ~45s/case)
 - [x] Production credentials obtained, no approval needed (token exchange returns `mode: production`).
       Run anything with `AGENTCARD_ENV=prod` → uses `.env.prod` + `.agentcard_tokens.prod.json`
@@ -57,9 +62,12 @@ Auto-approval: https://docs.agentcard.sh/vault/app-auto-approval.md
       → `success` means auto-approval covers `/buy`; `approval_required` means it doesn't
 - [ ] Approval fallback (send `approval_url` to phone, re-confirm same hash): probably unneeded while purchases stay < $10
 - [ ] Untested in a real run: confirm timeout, `in_progress`, 409 price change. Decided: no offline tests for these.
+- [x] Integrated with Ezra's agent: `PURCHASE_BACKEND=mason` (masumi `ModulePurchaser`) loads `agentcard/purchase.py`.
+      Sandbox + fake escrow run passed 2026-10-06: job funded → real $12.41 cart → `sandbox_mode` → refunded (~50s)
 
 ### Open decisions
-- `CARD_LIMIT_USD` is $50 but auto-approval is $10 → recommend $10, and the Masumi price tier to match.
+- Keep `CARD_LIMIT_USD` at $50: auto-approval covered a $12.06 ceiling despite its $10 limit, and every cart's ceiling
+  is ~subtotal + $11, so a $10 cap would block everything. Keep demo purchases cheap (< $10 subtotal).
 - Budget check compares item subtotal only → recommend subtotal + $1.50 for fees. Checking `approvedCeilingCents`
   (~subtotal + $11) would block almost every cheap item.
 - Optional: register a webhook so `order.placed` events show in the dashboard for the demo.
@@ -82,12 +90,45 @@ Auto-approval: https://docs.agentcard.sh/vault/app-auto-approval.md
 - Card budget is $50: `purchase()` caps every cart at `min(max_total_usd, CARD_LIMIT_USD=50)`. Set the
   Masumi price tier to match.
 
-## Masumi side (`masumi/`)
-- `pip install masumi`, `masumi init`, register agent on Preprod via app.masumi.network, `.env` needs
-  AGENT_IDENTIFIER, PAYMENT_API_KEY, SELLER_VKEY, NETWORK=Preprod.
-- Input schema: `ask`, `max_total_usd`, address fields. Fixed price tier (e.g. purchases up to $20).
-- Use `fake_purchase.py` (same contract) until `agentcard/purchase.py` is wired in.
-- Check how the SDK handles refunds on failure; may need POST /payment/authorize-refund directly.
+## Masumi side (`masumi/`) — handoff for Ezra's agent
+Agentcard side is done and wired into Ezra's engine (commits `2b0039a`, `6e9691d`). Changes to `masumi/` were additive:
+`ModulePurchaser.normalize` in `providers.py`, the `mason` backend in `api.py`, `tests/test_module_purchaser.py`.
+Ezra's fake and replay backends are unchanged. 115 tests pass.
+
+### Running with the real purchaser
+- `cd masumi && pip install -e '.[agentcard,test]'` (`requests` is needed by `agentcard/`).
+- `CARDANO_CARD_MODE=local PURCHASE_BACKEND=mason CARDANO_CARD_TOKEN=<24+ chars> cardano-card` → sandbox Agentcard.
+  Add `AGENTCARD_ENV=prod` for real purchases on Mason's card. Fake escrow: `simulated_escrow=true, simulated_purchase=false`.
+- `buyer.py`, `terminal demo` and `/local/start_job` refuse a non-simulated purchaser. Drive it over HTTP instead:
+  `POST /start_job` → `POST /local/jobs/{id}/fund` → poll `GET /status` → `request_refund` on `refund_due` /
+  `withdraw` on `result_submitted`.
+- Proven 2026-10-06: job `0c803187…` funded → real $12.41 cart → `sandbox_mode` → `refund_due` → `refunded` in ~50s.
+
+### How results map (`ModulePurchaser.normalize`)
+- `success` → Success with `total_usd` as a 2-decimal string (cart subtotal; real charge adds ~$1.40 in fees).
+- `failed` means no charge happened → `no_cart` / `over_budget` / `error` kept; `needs_input` → `no_cart`;
+  everything else (`sandbox_mode`, `declined`, `approval_required`, `price_changed`) → `declined`. All refund.
+- `pending` → `unknown` → engine goes to `reconciling` and calls `inspect_purchase(job_id)` each tick (one
+  conversation read). Never refund while pending. The engine passes the job UUID as `request_id`, so a crash or
+  retry can't buy twice (records live in `agentcard/.purchases.json` on the machine that ran the job).
+- `AgentCardPurchaser` (`agentcard_bridge.py`) shouldn't be used against the real API: it needs a cart currency
+  field and merchant tracking that Agentcard doesn't provide, and only counts `status == "order_placed"` as an order
+  (the real gum order didn't return that).
+
+### Agentcard credentials
+`agentcard/.env` + `.agentcard_tokens.json` (sandbox, user `usr_31f5c35616a38795b45ea5ec`) and `.env.prod` +
+`.agentcard_tokens.prod.json` (prod, user `usr_f9fe7033a2dc8fe3896baeb1`). Never committed; currently on Mason's machine.
+Refresh tokens are single-use: only ONE machine may use a token file. Hand it over explicitly and stop using
+the old copy. If a refresh fails with `invalid_refresh_token`, re-link with `setup_vault.py --connect <Mason's phone>`
+(sandbox code 111111) and check the user id (prod must stay `usr_f9fe…`, which has the real card).
+
+### What's left (Masumi side)
+1. Fund the Preprod selling and buying wallets (manual faucet; the faucet API key was rejected).
+2. Expose the agent publicly (tunnel) and register it on Preprod. Set `CARDANO_CARD_MODE=preprod`,
+   `MASUMI_V1_COMPATIBLE=true`, `PAYMENT_SERVICE_URL`, `PAYMENT_API_KEY`, `AGENT_IDENTIFIER`, `SELLER_VKEY`.
+3. Prove escrow → payout and escrow → refund on Preprod with `PURCHASE_BACKEND=fake`.
+4. `PURCHASE_BACKEND=mason` on Preprod: sandbox decline → refund, then `AGENTCARD_ENV=prod` cheap real order → payout.
+   Record tx hashes and order ids for the demo.
 - Docs: https://www.masumi.network/dev/masumi/core-concepts/payments and .../refunds-and-disputes
 
 ## Rules

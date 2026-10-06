@@ -21,3 +21,4 @@ data/
 /work/
 .env.prod
 .agentcard_tokens.prod.json
+.purchases.json
