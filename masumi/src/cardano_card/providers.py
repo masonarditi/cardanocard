@@ -123,8 +123,21 @@ class ModulePurchaser:
             kwargs["response"] = response
         # No outer timeout: cancelling a thread cannot stop an in-flight card charge.
         # Mason must bound provider I/O and return pending:unknown after ambiguous timeouts.
-        return await asyncio.to_thread(self.module.purchase, validated.ask, float(validated.max_total_usd),
-                                       validated.address.model_dump(), **kwargs)
+        return self.normalize(await asyncio.to_thread(self.module.purchase, validated.ask, float(validated.max_total_usd),
+                                                      validated.address.model_dump(), **kwargs))
 
     async def inspect(self, request_id):
-        return await asyncio.to_thread(self.module.inspect_purchase, request_id=request_id)
+        return self.normalize(await asyncio.to_thread(self.module.inspect_purchase, request_id=request_id))
+
+    @staticmethod
+    def normalize(raw):
+        """Map Mason's contract onto Outcome. Every Mason failure means no charge, so it stays a failure."""
+        if raw.get("status") == "success":
+            return {"status": "success", "order_id": str(raw["order_id"]), "total_usd": f"{Decimal(str(raw['total_usd'])):.2f}",
+                    "merchant": raw.get("merchant") or "unknown", "items": raw["items"]}
+        if raw.get("status") == "failed":
+            reason = raw.get("reason")
+            return {"status": "failed", "reason": reason if reason in {"no_cart", "over_budget", "error"} else
+                    "no_cart" if reason == "needs_input" else "declined"}
+        return {"status": "pending", "reason": "unknown", "conversation_id": raw.get("conversation_id"),
+                "message": str(raw.get("detail") or "Purchase outcome unresolved")}
