@@ -214,3 +214,16 @@ def test_hosted_deadlines_default_and_validation():
     for bad in (["12", "16", "45", "60"], ["12", "30", "40", "60"], ["12", "30", "45", "55"], ["1", "2", "3"]):
         with pytest.raises(ValueError):
             HostedMasumiEscrow(HOSTED_URL, "mas_x", AGENT, SELLER, PAYOUT, "10000000", deadlines_min=bad)
+
+
+async def test_unfunded_request_marked_invalid_by_the_service_expires_instead_of_review(hosted):
+    escrow = adapter()
+    terms = await escrow.create({"wire_input": {}, "caller_id": "a" * 26})
+    job = {"payment": terms, "caller_id": "a" * 26, "result": None, "chain_transactions": []}
+    hosted.payment.update(onChainState="FundsOrDatumInvalid", CurrentTransaction=None, TransactionHistory=[],
+                          NextAction={"requestedAction": "WaitingForManualAction", "errorType": "Unknown",
+                                      "errorNote": "Payment request payByTime passed without on-chain lock"})
+    assert await escrow.observe(job) == "AwaitingPayment"  # engine's own clock turns this into `expired`
+    assert "payByTime passed" in job["node_note"]
+    hosted.payment.update(CurrentTransaction={"txHash": "a" * 64})  # funds were locked, then the datum went bad
+    assert await escrow.observe(job) == "FundsOrDatumInvalid"

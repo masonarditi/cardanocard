@@ -185,6 +185,13 @@ class HostedMasumiEscrow(MasumiEscrow):
                 self.funds(data.get('RequestedFunds')) != payment['RequestedFunds']):
             return 'FundsOrDatumInvalid'
         state = data.get('onChainState') or 'AwaitingPayment'
+        records_seen = bool(data.get('CurrentTransaction')) or bool(data.get('TransactionHistory'))
+        if state == 'FundsOrDatumInvalid' and not records_seen:
+            # The hosted service marks an unfunded request invalid once payByTime passes ("no FundsLocked tx
+            # observed"). Nothing was ever locked, so let the engine expire it instead of flagging operator review.
+            job['node_action'] = (data.get('NextAction') or {}).get('requestedAction')
+            job['node_note'] = (data.get('NextAction') or {}).get('errorNote')
+            return 'AwaitingPayment'
         if state in {'ResultSubmitted', 'Withdrawn', 'WithdrawAuthorized'} and job.get('result'):
             expected = self.output_hash(job['result'], job['caller_id'])
             if data.get('resultHash') != expected:
