@@ -1,5 +1,20 @@
 # Hosted runtime on Preprod (no local node)
 
+> **16:45 SGT:** Sokosumi Preprod listed **the V2 SaaS agent** (CardanoCard tUSDM, `/v3`, `…36cbc1000000`, 2,000 credits)
+> after a manual edit on the Masumi side — not the V1 one. The runtime is therefore back on the hosted V2 rail
+> (`scripts/railway_rail.py --rail v2`, job DB `/data/jobs-v2.db`). The V1 node + agent (`/v4`) stay deployed as the
+> fallback (`--rail v1`); a funded V1 run through the hosted node completed on 2026-10-07 16:27–16:32 (job `75ad8d3a…`,
+> FundsLocked → sandbox cart → sandbox_mode → RefundRequested, buyer = our local node via `preprod_buyer --remote-agent`).
+
+> **Current architecture (2026-10-07 16:20 SGT):** the Railway runtime serves **CardanoCard on the V1 rail** (`…/v4`,
+> identifier `7e8bdaf2…8589cf963cabcd`, Fixed 20 tUSDM) through **our own Masumi payment node on Railway**
+> (`cardanocard-node`, image 0.22.0 + the Preprod cost-model patch, Postgres plugin, schema `v22`), using our funded
+> seller wallet `62f4…` (collection → `addr_test1qpgq…`). Reason: the Preprod registry service that Sokosumi reads
+> indexes only the V1 policy and rejects V2, while the Masumi SaaS mints only V2 — so a Sokosumi-visible agent must be
+> minted from a V1 node we control. The V2 agents below remain registered but idle. Node details:
+> `work/node-domain.txt`, registration receipt `work/node-registration-v1-submission.json`. Gotcha: `.env.preprod`
+> values are single-quoted; copy them with python-dotenv, not `cut`, or Railway stores the quotes.
+
 Since 2026-10-07 the public Railway service runs the **real** agent, not the registration stub:
 
 - URL: https://cardanocard-preprod-production.up.railway.app (Railway project `cardanocard-preprod`, service

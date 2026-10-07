@@ -129,3 +129,14 @@ async def test_http_failure_is_durable_private_and_never_retried(buyer, status):
     assert await replacement.fund(PAYLOAD, terms()) == first
     assert calls == ['/purchase/']
     assert 'must-not-be-persisted' not in str(buyer.store.get('buyer_writes', 'fund:job'))
+
+
+def test_expected_funds_flag_parses_ada_and_tokens(monkeypatch):
+    from argparse import Namespace
+    from cardano_card.preprod_buyer import expected_funds
+    monkeypatch.setenv("MASUMI_FEE_LOVELACE", "10000000")
+    assert expected_funds(Namespace(expected_funds=None)) == {"unit": "", "amount": "10000000"}
+    assert expected_funds(Namespace(expected_funds="lovelace:5000000")) == {"unit": "", "amount": "5000000"}
+    assert expected_funds(Namespace(expected_funds="16a55b2a" + "0" * 48 + "0014df10745553444d:20000000")) == {"unit": "16a55b2a" + "0" * 48 + "0014df10745553444d", "amount": "20000000"}
+    with pytest.raises(ValueError):
+        expected_funds(Namespace(expected_funds="abc:zero"))

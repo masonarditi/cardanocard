@@ -186,6 +186,11 @@ payment creation (node minimums), refunds in minutes.
   one Railway serves, because Sokosumi bills only tUSDM on Preprod. Each SaaS agent has its own selling wallet
   (CardanoCard: `37d35cc9…`); never use the registry record's `SmartContractWallet` as `SELLER_VKEY`. See
   `masumi/docs/HOSTED_RUNTIME.md`.
+- **Sokosumi reality (verified 2026-10-07):** the Preprod registry service indexes only the V1 policy (`7e8bdaf2…`)
+  and rejects `Web3CardanoV2`; the Masumi SaaS mints only V2. So the demo agent is **CardanoCard on V1**
+  (`…8589cf963cabcd`, `…/v4`, Fixed 20 tUSDM), minted from **our own payment node on Railway** (`cardanocard-node`,
+  0.22.0 + cost-model patch) with the funded seller wallet `62f4…`. Runtime: `CARDANO_CARD_MODE=preprod`,
+  `PAYMENT_SERVICE_URL=<node public https>/api/v1`, `MASUMI_ALLOW_REMOTE_NODE=true`. See `masumi/docs/HOSTED_RUNTIME.md`.
 - Chain evidence: NOWNodes Preprod (`NOWNODES_API_KEY` in `masumi/infra/masumi/.env`, default when set) or Blockfrost
   (`BLOCKFROST_API_KEY_PREPROD`); `CHAIN_PROVIDER` forces one. Verifier requires `genesis.network_magic == 1`.
 - Docs: https://www.masumi.network/dev/masumi/core-concepts/payments and .../refunds-and-disputes

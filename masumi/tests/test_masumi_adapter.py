@@ -29,6 +29,7 @@ async def test_create_preserves_ms_terms_and_checks_seller(adapter):
     result = await adapter.create({"wire_input":{}, "caller_id":"a"*26})
     assert result["payByTime"] == 2000000000
     assert result["rawTimes"]["payByTime"] == "2000000000000"
+    assert result["paymentSourceType"] == "Web3CardanoV1" and result["rail"] == "self-hosted-v1"
     payload = adapter.post.call_args.args[1]
     assert payload["network"] == "Preprod" and payload["paymentType"] == "Web3CardanoV1"
     assert payload["payByTime"].endswith("Z")
@@ -262,3 +263,18 @@ def test_constructor_rejects_invalid_configured_payout_before_sdk_load(address):
     with pytest.raises(ValueError):
         MasumiEscrow('http://127.0.0.1:3001/api/v1', 'api-key', 'agent-id', SIGNING_KEY,
                      payout_address=address)
+
+
+@pytest.mark.parametrize("url,allow,ok", [("http://127.0.0.1:3001/api/v1", False, True), ("https://node.example.com/api/v1", False, False),
+                                         ("https://node.example.com/api/v1", True, True), ("http://node.example.com/api/v1", True, False),
+                                         ("http://cardanocard-node.railway.internal:3001/api/v1", True, True),
+                                         ("http://cardanocard-node.railway.internal:3001/api/v1", False, False)])
+def test_remote_node_requires_explicit_https_opt_in(url, allow, ok, monkeypatch):
+    import sys, types
+    fake = types.ModuleType("masumi.helper_functions"); fake.create_masumi_input_hash = lambda *a: "i"; fake.create_masumi_output_hash = lambda *a: "o"
+    monkeypatch.setitem(sys.modules, "masumi.helper_functions", fake); monkeypatch.setitem(sys.modules, "masumi", types.ModuleType("masumi"))
+    if ok:
+        MasumiEscrow(url, "k", "agent", "seller", allow_remote=allow)
+    else:
+        with pytest.raises(ValueError):
+            MasumiEscrow(url, "k", "agent", "seller", allow_remote=allow)

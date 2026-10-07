@@ -19,10 +19,14 @@ class MasumiEscrow:
     automatic_requested_refund = True
     simulated = False
 
-    def __init__(self, url, api_key, agent_identifier, seller_vkey, payout_address=None):
+    def __init__(self, url, api_key, agent_identifier, seller_vkey, payout_address=None, allow_remote=False):
         parsed = urlparse(url)
-        if parsed.scheme != 'http' or parsed.hostname not in {'127.0.0.1', 'localhost'} or parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise ValueError('This Preprod adapter requires a local Payment Service URL')
+        local = parsed.scheme == 'http' and parsed.hostname in {'127.0.0.1', 'localhost'}
+        # allow_remote: our own node on Railway's private network (http://<svc>.railway.internal) or HTTPS elsewhere.
+        internal = parsed.scheme == 'http' and (parsed.hostname or '').endswith('.railway.internal')
+        remote_ok = allow_remote and parsed.hostname and (parsed.scheme == 'https' or internal)
+        if (not local and not remote_ok) or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError('This Preprod adapter requires a local Payment Service URL (or MASUMI_ALLOW_REMOTE_NODE=true with HTTPS)')
         if not all((api_key, agent_identifier, seller_vkey)):
             raise ValueError('Preprod requires a Payment API key, registered agent, and seller verification key')
         if payout_address is not None:
@@ -161,7 +165,8 @@ class MasumiEscrow:
         if not result['payByTime'] < result['submitResultTime'] <= result['unlockTime'] <= result['externalDisputeUnlockTime']:
             raise ValueError('Unexpected escrow deadline ordering')
         result.update(agentIdentifier=self.agent_identifier, sellerVKey=self.seller_vkey, inputHash=expected,
-                      RequestedFunds=self.funds(data.get('RequestedFunds')), smartContractAddress=source['smartContractAddress'])
+                      RequestedFunds=self.funds(data.get('RequestedFunds')), smartContractAddress=source['smartContractAddress'],
+                      paymentSourceType='Web3CardanoV1', rail='self-hosted-v1')  # MIP-003 buyers read the rail from here
         if route is not None:
             result['payoutAddress'] = route['payoutAddress']
         return result

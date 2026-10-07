@@ -17,8 +17,10 @@ def adapter():
     result = object.__new__(HostedMasumiEscrow)
     result.input_hash, result.output_hash = lambda *_: "input-hash", lambda *_: "output-hash"
     result.url, result.api_key, result.agent_identifier, result.seller_vkey = HOSTED_URL, "mas_test", AGENT, SELLER
+    result.auth_header = "x-api-key"
     result.payout_address, result.fee_lovelace, result.contract, result.source_index = PAYOUT, "10000000", None, 0
     result.lovelace_per_usd, result.fixed_price, result.deadlines_min = None, False, HostedMasumiEscrow.DEFAULT_DEADLINES_MIN
+    result.source_type = "Web3CardanoV2"
     return result
 
 
@@ -214,3 +216,49 @@ def test_hosted_deadlines_default_and_validation():
     for bad in (["12", "16", "45", "60"], ["12", "30", "40", "60"], ["12", "30", "45", "55"], ["1", "2", "3"]):
         with pytest.raises(ValueError):
             HostedMasumiEscrow(HOSTED_URL, "mas_x", AGENT, SELLER, PAYOUT, "10000000", deadlines_min=bad)
+
+
+async def test_unfunded_request_marked_invalid_by_the_service_expires_instead_of_review(hosted):
+    escrow = adapter()
+    terms = await escrow.create({"wire_input": {}, "caller_id": "a" * 26})
+    job = {"payment": terms, "caller_id": "a" * 26, "result": None, "chain_transactions": []}
+    hosted.payment.update(onChainState="FundsOrDatumInvalid", CurrentTransaction=None, TransactionHistory=[],
+                          NextAction={"requestedAction": "WaitingForManualAction", "errorType": "Unknown",
+                                      "errorNote": "Payment request payByTime passed without on-chain lock"})
+    assert await escrow.observe(job) == "AwaitingPayment"  # engine's own clock turns this into `expired`
+    assert "payByTime passed" in job["node_note"]
+    hosted.payment.update(CurrentTransaction={"txHash": "a" * 64})  # funds were locked, then the datum went bad
+    assert await escrow.observe(job) == "FundsOrDatumInvalid"
+
+
+async def test_v1_source_type_selects_the_v1_contract_and_rail(hosted):
+    escrow = adapter()
+    escrow.source_type = "Web3CardanoV1"
+    hosted.payment["PaymentSource"] = {"network": "Preprod", "paymentSourceType": "Web3CardanoV1", "smartContractAddress": V1_CONTRACT}
+    terms = await escrow.create({"wire_input": {}, "caller_id": "a" * 26})
+    assert hosted.calls[-1][2]["paymentSourceType"] == "Web3CardanoV1"
+    assert terms["smartContractAddress"] == V1_CONTRACT and terms["rail"] == "hosted-v1" and terms["paymentSourceType"] == "Web3CardanoV1"
+    job = {"payment": terms, "caller_id": "a" * 26, "result": None, "chain_transactions": []}
+    hosted.payment.update(onChainState="FundsLocked", CurrentTransaction={"txHash": "c" * 64})
+    assert await escrow.observe(job) == "FundsLocked"
+
+
+def test_constructor_rejects_unknown_source_type():
+    with pytest.raises(ValueError):
+        HostedMasumiEscrow(HOSTED_URL, "mas_x", AGENT, SELLER, PAYOUT, "10000000", source_type="Web3CardanoV3")
+
+
+@pytest.mark.parametrize("url,header,ok", [
+    ("http://cardanocard-node.railway.internal:3001/api/v1/", "token", True),
+    ("http://cardanocard-node.railway.internal:3001/api/v1", "token", True),
+    ("https://evil.example/api/v1/", "token", False),
+    ("http://cardanocard-node.railway.internal:3001/", "token", False),
+    (HOSTED_URL, "cookie", False),
+])
+def test_own_railway_node_allowed_with_token_header(url, header, ok):
+    kwargs = dict(api_key="k", agent_identifier=AGENT, seller_vkey=SELLER, payout_address=PAYOUT, fee_lovelace="10000000", auth_header=header)
+    if ok:
+        e = HostedMasumiEscrow(url, **kwargs); assert e.url.endswith("/api/v1/") and e.auth_header == "token"
+    else:
+        with pytest.raises(ValueError):
+            HostedMasumiEscrow(url, **kwargs)

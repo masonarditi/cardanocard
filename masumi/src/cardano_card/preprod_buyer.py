@@ -128,11 +128,29 @@ class PreprodBuyer:
             "network": "Preprod", "blockchainIdentifier": saved["payload"]["blockchainIdentifier"]})
 
 
+def expected_funds(args):
+    """The one amount the buyer agrees to lock: --expected-funds UNIT:AMOUNT (UNIT '' or 'lovelace' = ADA), else the ADA fee."""
+    if args.expected_funds:
+        unit, _, amount = args.expected_funds.rpartition(":")
+        if not amount.isdigit() or int(amount) <= 0:
+            raise ValueError("--expected-funds must be UNIT:AMOUNT with a positive integer amount")
+        return {"unit": "" if unit in ("", "lovelace", "ADA") else unit, "amount": amount}
+    return {"unit": "", "amount": os.environ["MASUMI_FEE_LOVELACE"]}
+
+
 async def run(args):
     if os.getenv("MASUMI_V1_COMPATIBLE") != "true":
         raise ValueError("Validate and record V1 node compatibility before enabling this buyer")
     service_url = loopback_url(os.environ["BUYER_PAYMENT_SERVICE_URL"])
-    agent_url = loopback_url(args.url)
+    # --remote-agent: buy from a publicly hosted agent (HTTPS) that may run a real (sandbox) merchant checkout —
+    # this is the "any Masumi agent buys from Cardano Card" path; the local node stays the buyer's wallet only.
+    if args.remote_agent:
+        parsed = urlparse(args.url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.query or parsed.fragment:
+            raise ValueError("--remote-agent requires a plain HTTPS agent URL")
+        agent_url = args.url.rstrip("/")
+    else:
+        agent_url = loopback_url(args.url)
     buyer_key, caller_token = os.environ["BUYER_PAYMENT_API_KEY"], os.environ["CARDANO_CARD_TOKEN"]
     if not buyer_key or not caller_token:
         raise ValueError("Configure separate buyer-node and agent caller credentials")
@@ -146,14 +164,14 @@ async def run(args):
                    httpx.AsyncClient(base_url=service_url + "/", headers={"token": buyer_key}, timeout=30) as node:
             info = await agent.get("/availability")
             info.raise_for_status()
-            if info.json().get("simulated_escrow") is not False or info.json().get("simulated_purchase") is not True:
+            if info.json().get("simulated_escrow") is not False or (not args.remote_agent and info.json().get("simulated_purchase") is not True):
                 raise ValueError("This milestone requires Preprod escrow and simulated merchant purchases")
             class NodeRoutes:
                 async def post(self, route, **kwargs):
                     return await node.post(route.lstrip("/"), **kwargs)
             buyer = PreprodBuyer(store, NodeRoutes(), os.environ["AGENT_IDENTIFIER"], os.environ["SELLER_VKEY"],
                                  create_masumi_input_hash, hashlib.sha256((service_url + buyer_key).encode()).hexdigest(),
-                                 expected_funds=[{"unit":"", "amount":os.environ["MASUMI_FEE_LOVELACE"]}])
+                                 expected_funds=[expected_funds(args)])
             if args.action == "start":
                 request = StartRequest.model_validate(json.loads(Path(args.target).read_text())).model_dump(mode="json")
                 caller = request["identifier_from_purchaser"]
@@ -194,6 +212,8 @@ def main():
     parser.add_argument("target", help="Request JSON file for start; saved job ID otherwise")
     parser.add_argument("--url", default="http://127.0.0.1:8080")
     parser.add_argument("--database", default="data/preprod-buyer.db")
+    parser.add_argument("--remote-agent", action="store_true", help="Agent is a public HTTPS service (may run a real sandbox checkout)")
+    parser.add_argument("--expected-funds", help="UNIT:AMOUNT the buyer agrees to lock, e.g. 16a55b…:20000000 for 20 tUSDM")
     args = parser.parse_args()
     try:
         asyncio.run(run(args))
