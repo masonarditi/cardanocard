@@ -198,6 +198,8 @@ const byToken = (t: string) => [...jobs.values()].find((j) => j.token === t);
 const html = (body: string) => new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
 Bun.serve({
   port: Number(process.env.PORT ?? 8789),
+  // Railway's proxy reaches containers over IPv6: HOST="::" there; the default (IPv4) is fine on a laptop.
+  hostname: process.env.HOST ?? "0.0.0.0",
   routes: {
     "/webauthn.js": () => new Response(Bun.file(`${import.meta.dir}/node_modules/@simplewebauthn/browser/dist/bundle/index.umd.min.js`)),
     "/assets/masumi.webp": () => new Response(Bun.file(`${PUBLIC_ASSETS}/masumi-wordmark.webp`)),
