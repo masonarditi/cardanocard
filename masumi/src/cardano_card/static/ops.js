@@ -9,7 +9,7 @@ const BAD = new Set(["manual_review", "payment_creation_unknown", "expired", "fa
 const WARN = new Set(["refund_due", "refund_authorizing", "reconciling", "quote_rejected", "quote_expired"]);
 const badge = (phase) => `<span class="badge ${GOOD.has(phase) ? "good" : BAD.has(phase) ? "bad" : WARN.has(phase) ? "warn" : "live"}">${phase}</span>`;
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
-const t = (unix) => unix ? new Date(unix * 1000).toLocaleTimeString([], {hour12: false}) : "—";
+const t = (unix) => unix ? new Date(unix * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit", second: "2-digit"}) : "—";
 const ago = (unix) => unix ? `${Math.max(0, Math.round((Date.now() / 1000 - unix) / 60))} min ago` : "—";
 const dl = (id, rows) => { $(id).innerHTML = rows.map(([k, v, cls]) => `<dt>${esc(k)}</dt><dd class="${cls || ""}">${v}</dd>`).join(""); };
 const okText = (p, good, bad) => p == null ? "—" : !p.ok ? `<span class="bad">${esc(p.error)}</span>` : good;
