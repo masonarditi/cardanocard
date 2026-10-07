@@ -22,6 +22,8 @@ const digits = (s: string) => s.replace(/\D/g, "").slice(-10);
 const OWNERS = (process.env.OWNER_PHONES ?? "").split(",").map(digits).filter(Boolean);
 const TG_OWNERS = (process.env.OWNER_TELEGRAM_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const owner = (platform: string, id: string) => platform === "telegram" ? TG_OWNERS.includes(id) : OWNERS.includes(digits(id));
+const VERBOSE = process.env.CHAT_VERBOSE !== "0";
+const clock = (at: number) => new Date(at * 1000).toLocaleTimeString("en-GB", { timeZone: "Asia/Singapore" });
 const SANDBOX = (process.env.AGENTCARD_ENV ?? "sandbox") !== "prod";
 const CITY = (({ city, state }) => city ? `${city}, ${state}` : "you")(JSON.parse(process.env.DELIVERY_ADDRESS ?? "{}"));
 const DATA = `${import.meta.dir}/data`, PUBLIC_ASSETS = `${import.meta.dir}/../demo/video/public`;
@@ -94,10 +96,20 @@ async function introduce(space: Space, platform: string) {
 async function follow(job: Job) {
   const done = new Set<string>();
   const once = async (key: string, fn: () => Promise<unknown>) => { if (!done.has(key)) { done.add(key); await fn(); } };
-  let typed = 0;
+  let typed = 0, events = 0, node = "", outcome = "";
   for (;;) {
     const v = await buyer(`/jobs/${job.id}`).catch(() => null);
     const p: string = v?.phase ?? "";
+    // Verbose mode: the agent's own job timeline, the buyer node's escrow state and Agentcard's raw outcome.
+    if (VERBOSE && v) {
+      for (const e of (v.events ?? []).slice(events))
+        await job.space.send(`🔎 ${clock(e.at)} · ${String(e.phase).replaceAll("_", " ")} — ${e.message}`);
+      events = Math.max(events, v.events?.length ?? 0);
+      const n = v.node ? `${v.node.state ?? "—"} / ${v.node.action ?? "—"}${v.node.tx ? ` · tx ${v.node.tx.slice(0, 12)}…` : ""}${v.node.error ? ` · ${v.node.error}` : ""}` : "";
+      if (n && n !== node) await job.space.send(`⛓️ buyer node: ${(node = n)}`);
+      const o = v.purchase ? Object.entries(v.purchase).filter(([, x]) => x !== null && x !== "").map(([k, x]) => `${k}: ${typeof x === "object" ? JSON.stringify(x) : x}`).join(" · ") : "";
+      if (o && o !== outcome) await job.space.send(`🧾 Agentcard: ${(outcome = o)}`);
+    }
     if (["quote_queued", "preparing_quote", "quote_reconciling"].includes(p) && Date.now() - typed > 15000) {
       typed = Date.now();
       await job.space.startTyping().catch(() => {});
@@ -280,6 +292,7 @@ async function handle(space: Space, message: any) {
   const job: Job = { id: job_id, space, platform: message.platform, token: crypto.randomUUID().replaceAll("-", ""),
     stage: "quote", ask, max, fee, quoted };
   jobs.set(job_id, job);
+  if (VERBOSE) await space.send(`🔎 job ${job_id} · ${quoted ? "local seller (quote first)" : "live CardanoCard /v3"} · escrow ${fee} · budget $${max}`);
   follow(job).catch((e) => console.log(`follow ${job_id} stopped: ${e.message}`));
 }
 

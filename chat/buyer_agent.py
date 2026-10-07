@@ -115,6 +115,7 @@ async def view(job_id: str):
     return {"phase": status["phase"], "escrow_state": status["escrow_state"], "quote": status.get("quote"),
             "purchase": status.get("purchase"), "result": status.get("result"), "fee": FEE,
             "lock_txs": saved.get("lock_txs", []), "pay_error": saved.get("pay_error"),
+            "events": status.get("events", []), "node": saved.get("node"),
             "fund": store.get("buyer_writes", "fund:" + job_id), "refund": store.get("buyer_writes", "refund:" + job_id)}
 
 
@@ -166,6 +167,8 @@ async def advance_v3(job_id, saved):
     data = response.json().get("data", {})
     purchase = next((p for p in data.get("Purchases") or [] if p.get("blockchainIdentifier") == identifier), {})
     lock = (purchase.get("CurrentTransaction") or {}).get("txHash")
+    saved["node"] = {"state": purchase.get("onChainState"), "action": (purchase.get("NextAction") or {}).get("requestedAction"),
+                     "error": (purchase.get("NextAction") or {}).get("errorNote"), "tx": lock}
     if lock and not saved.get("lock_txs") and purchase.get("onChainState") == "FundsLocked":
         saved["lock_txs"] = [lock]
     if status["phase"] == "refund_due" and (status.get("purchase") or {}).get("status") == "failed" and not saved.get("refund_requested"):
