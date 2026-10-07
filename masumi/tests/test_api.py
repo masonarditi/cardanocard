@@ -270,3 +270,22 @@ async def test_operator_job_route_is_gated_and_returns_the_stored_job(tmp_path):
                 assert (await client.get("/operator/jobs/nope", headers={"Authorization": "Bearer " + "t" * 32})).status_code == 404
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("raw,expected", [(12.345, "12.35"), (0.1 + 0.2, "0.30"), (20, "20.00"), ("12.5", "12.50"), (12.34, "12.34")])
+def test_budget_from_js_numbers_rounds_to_cents(raw, expected):
+    from decimal import Decimal
+    from cardano_card.models import parse_purchase_input
+    base = {"ask": "gum", "street": "1 St", "city": "SF", "state": "CA", "zip": "94123", "phone": "+14155550100", "name": "Demo"}
+    assert parse_purchase_input({**base, "max_total_usd": raw}).max_total_usd == Decimal(expected)
+
+
+def test_input_schema_matches_sokosumi_field_schemas():
+    from cardano_card.models import INPUT_SCHEMA
+    allowed = {"string": {"placeholder", "description"}, "number": {"default", "placeholder", "description"},
+               "text": {"default", "placeholder", "description"}}
+    ids = [f["id"] for f in INPUT_SCHEMA["input_data"]]
+    assert ids == ["ask", "max_total_usd", "street", "city", "state", "zip", "phone", "name"]
+    for field in INPUT_SCHEMA["input_data"]:
+        assert field["type"] in allowed and field["name"]
+        assert set((field.get("data") or {}).keys()) <= allowed[field["type"]]

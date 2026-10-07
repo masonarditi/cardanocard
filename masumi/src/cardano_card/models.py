@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -37,6 +37,12 @@ class PurchaseInput(BaseModel):
     def reject_bool(cls, value):
         if isinstance(value, bool):
             raise ValueError("Budget must be a dollar amount")
+        # Marketplace forms send JS numbers; round sub-cent noise (12.345, 0.1+0.2) to cents instead of rejecting.
+        if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().replace(".", "", 1).isdigit()):
+            try:
+                return str(Decimal(str(value).strip()).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            except Exception:
+                return value
         return value
 
     @field_validator("max_total_usd")
@@ -120,7 +126,16 @@ class ProvideInput(BaseModel):
     input_data: InputResponse
 
 
+# MIP-003 input schema as rendered by Sokosumi (packages/masumi input.schema.ts): `string`/`number` carry
+# placeholder/description, `text` additionally carries a default, so the delivery address is prefilled for demos.
+_DEMO_ADDRESS = {"street": "1900 Jefferson St", "city": "San Francisco", "state": "CA", "zip": "94123",
+                 "phone": "+14155550100", "name": "Ada Lovelace"}
 INPUT_SCHEMA = {"input_data": [
-    {"id": "ask", "type": "string", "name": "What should we buy?"},
-    {"id": "max_total_usd", "type": "number", "name": "Maximum merchant total (USD)"},
-] + [{"id": key, "type": "string", "name": key.title()} for key in Address.model_fields]}
+    {"id": "ask", "type": "string", "name": "What should we buy?",
+     "data": {"placeholder": "a pack of Trident sugar-free gum from Amazon",
+              "description": "One item from a US retailer (Amazon). Keep it specific; the agent picks the best-value match."}},
+    {"id": "max_total_usd", "type": "number", "name": "Maximum merchant total (USD)",
+     "data": {"default": 20, "description": "Cap on the merchant subtotal. Fixed-price agent: 20 ADA is locked per job regardless."}},
+] + [{"id": key, "type": "text", "name": key.title(), "data": {"default": _DEMO_ADDRESS[key],
+                                                             "description": "US/Canada delivery only" if key == "street" else None}}
+     for key in Address.model_fields]}

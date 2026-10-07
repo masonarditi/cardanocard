@@ -352,7 +352,7 @@ async def test_payment_creation_timeout_reserves_id_and_never_recreates(engine):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("budget", [True, "NaN", "Infinity", "-1", "0", "1.001"])
+@pytest.mark.parametrize("budget", [True, "NaN", "Infinity", "-1", "0", "abc", "1,5", "10001"])  # sub-cent values now round to cents
 def test_invalid_budget_rejected_before_payment(budget):
     payload = copy.deepcopy(PAYLOAD)
     payload["input_data"]["max_total_usd"] = budget
