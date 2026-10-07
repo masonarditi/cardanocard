@@ -79,6 +79,63 @@ def test_confirmed_needs_settled_order_not_just_an_order_id(api):
     assert confirm(q["quote_id"]) == out and len(api.confirms()) == 1
 
 
+@pytest.mark.parametrize("ledger_status", ["placed", "settled", "completed", "shipped"])
+def test_any_done_order_status_confirms(api, ledger_status):
+    q = prepare(api)
+    api.buys.append(PLACED)
+    api.convs.append({"turn_in_progress": False, "orders": [{**SETTLED["orders"][0], "status": ledger_status}]})
+    out = confirm(q["quote_id"])
+    assert (out["status"], out["order_id"], out["total_cents"]) == ("confirmed", "ord_1", 270)
+
+
+def test_unknown_order_status_with_captured_charge_confirms(api):
+    q = prepare(api)
+    api.buys.append(PLACED)
+    api.convs.append({"turn_in_progress": False, "orders": [{"order_id": "ord_1", "status": "processing"}],
+                      "last_checkout": {"status": "placed", "charge_status": "captured", "total_cents": 270}})
+    out = confirm(q["quote_id"])
+    assert (out["status"], out["total_cents"]) == ("confirmed", 270)
+
+
+@pytest.mark.parametrize("total,expected", [(270.0, 270), ("270", 270), (None, 132), ("n/a", 132)])
+def test_total_cents_is_coerced_or_falls_back_to_the_quote(api, total, expected):
+    q = prepare(api)
+    api.buys.append(PLACED)
+    api.convs.append({"turn_in_progress": False, "orders": [{**SETTLED["orders"][0], "total_cents": total}]})
+    out = confirm(q["quote_id"])
+    assert out["status"] == "confirmed" and out["total_cents"] == expected and type(out["total_cents"]) is int
+
+
+def test_failed_order_with_a_charge_is_pending_not_refund(api):
+    q = prepare(api)
+    api.buys.append(PLACED)
+    api.convs.append({"turn_in_progress": False, "orders": [{"order_id": "ord_1", "status": "failed"}],
+                      "last_checkout": {"charge_status": "captured"}})
+    assert confirm(q["quote_id"])["status"] == "pending"
+
+
+def test_failed_order_without_charge_is_no_purchase(api):
+    q = prepare(api)
+    api.buys.append(PLACED)
+    api.convs.append({"turn_in_progress": False, "orders": [{"order_id": "ord_1", "status": "failed"}],
+                      "last_checkout": {"charge_status": "none"}})
+    out = confirm(q["quote_id"])
+    assert (out["status"], out["reason"], out["no_purchase"]) == ("failed_no_purchase", "funding_failed", True)
+
+
+def test_cart_over_the_card_limit_is_not_quoted(api):
+    out = prepare(api, budget="80.00", response=(200, {**QUOTED[1], "cart": {**CART, "approvedCeilingCents": 6000}}))
+    assert (out["status"], out["reason"]) == ("failed_no_purchase", "over_card_limit") and not api.confirms()
+
+
+@pytest.mark.parametrize("code", [400, 408, 429])
+def test_client_error_after_confirm_reads_the_ledger(api, code):
+    q = prepare(api)
+    api.buys.append((code, {"error": "x"}))
+    api.convs.append(SETTLED)
+    assert confirm(q["quote_id"])["status"] == "confirmed" and len(api.confirms()) == 1
+
+
 def test_vault_approval_is_resolved_by_inspect(api):
     q = prepare(api)
     api.buys.append((200, {"status": "declined", "decline_code": "vault_approval_required", "charge_status": "none",

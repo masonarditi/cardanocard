@@ -73,6 +73,13 @@ Auto-approval: https://docs.agentcard.sh/vault/app-auto-approval.md
       ledger record or an unreadable ledger all return `pending` (engine reconciles; never refunds). Ledger
       writes are atomic. `agentcard.py` refreshes tokens atomically under the same lockfile + pending marker as
       masumi's `SandboxTransport`. Offline tests: `agentcard/tests/test_purchase_v1.py`.
+- [x] 2026-10-07 `purchase_v2.py`: `confirmed` no longer requires the invented ledger status `settled` — any done
+      status (`placed`, `settled`, `completed`, …) or a captured/authorized `charge_status` confirms; `total_cents` is
+      coerced (int-valued float/str) and falls back to the quote estimate; a dead order is `failed_no_purchase` only
+      with `charge_status: none`; carts whose ceiling exceeds the $50 card limit are refused at prepare (no escrow);
+      any HTTP error after a confirm is resolved from the conversation. `staged_acceptance` stops on `awaiting_input`,
+      requires `--exclusive-handoff` + credential files for sandbox/live, and has a console script. Review notes:
+      `masumi/docs/MASON_V2_REVIEW.md`.
 
 ### Open decisions
 - Keep `CARD_LIMIT_USD` at $50: auto-approval covered a $12.06 ceiling despite its $10 limit, and every cart's ceiling

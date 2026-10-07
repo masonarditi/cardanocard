@@ -1,6 +1,9 @@
 # Review notes for Mason — `agentcard/purchase_v2.py` and `staged_acceptance.py` (2026-10-06, Ezra's side)
 
-Nothing in `agentcard/` v2 or `staged_acceptance.py` was changed from our side. These came out of an offline audit
+**Update 2026-10-07: items 1–5 below are fixed on `ezra`.** Kept for context on *why*; please review the changes to
+`purchase_v2.py` since they touch your contract's confirmed/failed semantics.
+
+These came out of an offline audit
 (driving `StagedEngine` + `FakeEscrow` against `purchase_v2` with monkeypatched `buy`/`conversation`). Ranked by what
 would bite in the live demo.
 

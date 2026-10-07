@@ -55,6 +55,8 @@ def configured_engine():
         else:
             escrow = FakeEscrow(store)
         if backend in {"staged_fake", "staged_module"}:
+            if backend == "staged_module":
+                sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "agentcard"))
             module = (FakeStagedModule(store, os.getenv("FAKE_SCENARIO", "success")) if backend == "staged_fake"
                       else StagedModule(os.environ["MASON_STAGED_MODULE"]))
             return StagedEngine(store, escrow, module,

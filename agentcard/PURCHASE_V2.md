@@ -42,8 +42,8 @@ problem returns a `CheckoutOutcome` `failed_no_purchase` (`unexpected_items`, `a
 
 | status | when | fields |
 |---|---|---|
-| `confirmed` | The saved order is in Agentcard's order ledger (`GET /buy/conversations/{id}`) with `status: settled` | `merchant_confirmed: true`, `charge_status: captured`, `order_id`, `total_cents` (all-in charge), `merchant`, `items` |
-| `failed_no_purchase` | Agentcard said nothing was charged (`charge_status: none`), or checkout was refused before sending | `no_purchase: true`, `charge_status: none`, `reason`: `sandbox_mode` or another decline code, `over_budget`, `cart_changed` (409: new price/cart, no charge), `funding_failed`, `error` |
+| `confirmed` | The saved order is in Agentcard's order ledger (`GET /buy/conversations/{id}`) with a done status (`settled`, `placed`, `confirmed`, `completed`, `shipped`, `delivered`) **or** the checkout's `charge_status` is captured/authorized. The ledger vocabulary is only partly observed (the real gum order showed `placed`), hence the set. | `merchant_confirmed: true`, `charge_status: captured`, `order_id`, `total_cents` (ledger total → checkout total → quote estimate; coerced to int), `merchant`, `items` |
+| `failed_no_purchase` | Agentcard said nothing was charged (`charge_status: none`), or checkout was refused before sending. A dead order (`failed`/`cancelled`) is no-purchase only with `charge_status: none`; otherwise it stays `pending`. | `no_purchase: true`, `charge_status: none`, `reason`: `sandbox_mode` or another decline code, `over_budget`, `over_card_limit` (ceiling > $50: not quoted, no escrow), `cart_changed` (409: new price/cart, no charge), `funding_failed`, `error` |
 | `approval_required` | Vault approval needed | `approval_url`; after approval Agentcard places the order itself, so call `inspect_purchase` |
 | `pending` | `in_progress`, `charge_confirming`, `order_not_in_ledger_yet`, `unresolved`, `inspect_failed`, `order_mismatch`, `order_cancelled` | `order_id` when known; keep inspecting, never refund |
 | `partial` | `partially_placed` or several orders | Manual reconciliation |
@@ -58,7 +58,9 @@ problem returns a `CheckoutOutcome` `failed_no_purchase` (`unexpected_items`, `a
   turn's search results (`catalog`).
 - A declined confirm can come back with `status: "needs_input"`; only `decline_code` and `charge_status` are reliable.
 - The ceiling is ~$11 above the subtotal, so the budget must cover it: sandbox 12-pack gum $12.34 / ceiling $23.41;
-  production single pack $1.32 / ceiling ~$12.06 (actual charge $2.70).
+  production single pack $1.32 / ceiling ~$12.06 (actual charge $2.70). **Set the request's `max_total_usd` to at
+  least the ceiling** (≥ $12.10 for prod gum, ≥ $23.50 for the sandbox 12-pack) or the engine rejects the quote
+  before escrow. Any HTTP error after a confirm is resolved from the conversation, never treated as no-charge.
 
 ## Examples (live sandbox through Ezra's StagedEngine, 2026-10-06)
 
@@ -84,8 +86,9 @@ Confirmed shape (offline tests; no v2 production run yet):
 
 ## Tests
 
-- `agentcard/.venv/bin/python -m pytest agentcard/tests`: 22 unit tests (Agentcard API faked). They cover preparing
-  without spending, confirmed only once settled, vault approval, over-budget, ambiguous, non-USD and leftover-item
+- `agentcard/.venv/bin/python -m pytest agentcard/tests`: unit tests with the Agentcard API faked (v1 in
+  `test_purchase_v1.py`, v2 in `test_purchase_v2.py`). They cover preparing
+  without spending, confirmed once the order is done or the charge captured, total coercion/fallback, vault approval, over-budget, ambiguous, non-USD and leftover-item
   carts, changed cart, wrong quote, timeout, duplicates, restart mid-prepare and mid-confirm, partial, sandbox
   declines, and 5xx as pending.
 - Run with masumi's venv, `test_staged_contract.py` drives Ezra's real `StagedEngine` + `StagedModule` with this
