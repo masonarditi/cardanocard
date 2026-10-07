@@ -64,7 +64,8 @@ def configured_engine():
                                         os.getenv("PAYOUT_ADDRESS", ""), os.getenv("MASUMI_FEE_LOVELACE", "10000000"),
                                         os.getenv("MASUMI_PAYMENT_SOURCE_INDEX", "0"),
                                         lovelace_per_usd=os.getenv("MASUMI_LOVELACE_PER_USD") or None,
-                                        deadlines_min=[x for x in os.getenv("MASUMI_DEADLINES_MIN", "").split(",") if x.strip()] or None)
+                                        deadlines_min=[x for x in os.getenv("MASUMI_DEADLINES_MIN", "").split(",") if x.strip()] or None,
+                                        source_type=os.getenv("MASUMI_PAYMENT_SOURCE_TYPE", "Web3CardanoV2"))
         elif mode == "preprod":
             if os.getenv("MASUMI_V1_COMPATIBLE") != "true":
                 raise ValueError("Validate the selected Payment Service against the pinned V1 SDK before Preprod use")

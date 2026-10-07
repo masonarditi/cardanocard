@@ -17,6 +17,7 @@ from .masumi_adapter import MasumiEscrow
 
 HOSTED_URL = 'https://app.masumi.network/pay/api/v1/'
 SOURCE_TYPE = 'Web3CardanoV2'
+SOURCE_TYPES = {'Web3CardanoV1', 'Web3CardanoV2'}
 
 
 class HostedMasumiEscrow(MasumiEscrow):
@@ -31,7 +32,7 @@ class HostedMasumiEscrow(MasumiEscrow):
     DEFAULT_DEADLINES_MIN = (12, 30, 45, 60)
 
     def __init__(self, url, api_key, agent_identifier, seller_vkey, payout_address, fee_lovelace, source_index=0,
-                 lovelace_per_usd=None, deadlines_min=None):
+                 lovelace_per_usd=None, deadlines_min=None, source_type=SOURCE_TYPE):
         parsed = urlparse(url)
         if url.rstrip('/') + '/' != HOSTED_URL or parsed.scheme != 'https':
             raise ValueError('The hosted adapter only talks to Masumi\'s hosted Preprod payment service')
@@ -49,6 +50,10 @@ class HostedMasumiEscrow(MasumiEscrow):
         self.payout_address, self.fee_lovelace = payout_address, str(int(fee_lovelace))
         # Index into the agent's registered supportedPaymentSources (the hosted V2 API requires it).
         self.source_index, self.contract = int(source_index), None
+        # The hosted service runs both rails on Preprod. Sokosumi's registry/marketplace indexes only V1 there.
+        if source_type not in SOURCE_TYPES:
+            raise ValueError('MASUMI_PAYMENT_SOURCE_TYPE must be Web3CardanoV1 or Web3CardanoV2')
+        self.source_type = source_type
         mins = tuple(int(x) for x in (deadlines_min or self.DEFAULT_DEADLINES_MIN))
         if len(mins) != 4 or not (0 < mins[0] <= mins[1] - 5 and mins[1] >= 15 and mins[2] >= mins[1] + 15 and mins[3] >= mins[2] + 15):
             raise ValueError('Deadlines must be 4 minute offsets satisfying the node minimums (payBy<=result-5, result>=15, unlock>=result+15, dispute>=unlock+15)')
@@ -107,12 +112,12 @@ class HostedMasumiEscrow(MasumiEscrow):
         if not isinstance(sources, list) or len(sources) >= 100:
             raise ValueError('Payout source query is malformed or may be truncated')
         matches = [s for s in sources if isinstance(s, dict) and s.get('network') == 'Preprod'
-                   and s.get('paymentSourceType') == SOURCE_TYPE]
+                   and s.get('paymentSourceType') == self.source_type]
         contract = payment.get('smartContractAddress') or self.contract
         if contract is not None:
             matches = [s for s in matches if s.get('smartContractAddress') == contract]
         if len(matches) != 1:
-            raise ValueError('Hosted Preprod V2 payment source is missing or ambiguous')
+            raise ValueError('Hosted Preprod payment source is missing or ambiguous')
         contract = matches[0].get('smartContractAddress')
         if _address_bytes(contract)[0] >> 4 != 7:
             raise ValueError('Payout source is not a testnet script address')
@@ -123,7 +128,7 @@ class HostedMasumiEscrow(MasumiEscrow):
         source = data.get('PaymentSource') or {}
         wallet = data.get('SmartContractWallet') or {}
         return (bool(data.get('blockchainIdentifier')) and data.get('inputHash') == expected_input_hash and
-                source.get('network') == 'Preprod' and source.get('paymentSourceType') == SOURCE_TYPE and
+                source.get('network') == 'Preprod' and source.get('paymentSourceType') == self.source_type and
                 (contract is None or source.get('smartContractAddress') == contract) and
                 wallet.get('walletVkey') == self.seller_vkey and
                 data.get('agentIdentifier') in (None, self.agent_identifier) and
@@ -143,7 +148,7 @@ class HostedMasumiEscrow(MasumiEscrow):
         route = await self.validate_payout()
         expected = self.input_hash(job['wire_input'], job['caller_id'])
         lovelace = None if self.fixed_price else self.escrow_lovelace(job)
-        payload = {'network': 'Preprod', 'paymentSourceType': SOURCE_TYPE, 'agentIdentifier': self.agent_identifier,
+        payload = {'network': 'Preprod', 'paymentSourceType': self.source_type, 'agentIdentifier': self.agent_identifier,
                    'identifierFromPurchaser': job['caller_id'], 'inputHash': expected,
                    'supportedPaymentSourceIndex': self.source_index,
                    'sellerReturnAddress': self.payout_address, **self.deadlines(datetime.now(timezone.utc))}
@@ -168,7 +173,8 @@ class HostedMasumiEscrow(MasumiEscrow):
             raise ValueError('Fixed-price agent must resolve to a single ADA/token amount of at most 100 units')
         result.update(agentIdentifier=self.agent_identifier, sellerVKey=self.seller_vkey, inputHash=expected,
                       RequestedFunds=funds, smartContractAddress=route['smartContractAddress'],
-                      payoutAddress=self.payout_address, paymentSourceType=SOURCE_TYPE, rail='hosted-v2',
+                      payoutAddress=self.payout_address, paymentSourceType=self.source_type,
+                      rail='hosted-v1' if self.source_type == 'Web3CardanoV1' else 'hosted-v2',
                       supportedPaymentSourceIndex=self.source_index)
         return result
 
