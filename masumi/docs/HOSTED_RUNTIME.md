@@ -55,6 +55,18 @@ Variables are set on the service (`railway variables`): `PAYMENT_SERVICE_URL`, `
 `MASUMI_PAYMENT_SOURCE_INDEX`, `PURCHASE_BACKEND`, `FAKE_SCENARIO`, `CARDANO_CARD_*`. Never upload `.env*`, wallet
 recovery or Agentcard tokens in the staging directory.
 
+## Sokosumi listing (why a second, Fixed-price agent exists)
+
+Sokosumi's catalogue (`buildAvailableAgentWhereClause` in masumi-network/sokosumi) lists only agents that are
+`status ONLINE`, Standard MIP-003 entries, `isShown` (default on Preprod) and priced **FREE or FIXED** in a billable
+unit (ADA/tUSDM); for V2 agents Sokosumi's own node must also report a purchase-ready V2 source. **Dynamic agents are
+never listed**, so `67ab0c92…` cannot be hired on Sokosumi. On 2026-10-07 a second SaaS agent was registered:
+**"Cardano Card"** `4e0531b8-e453-40d7-ae03-ad52ade78924`, Fixed **20 ADA**, `apiUrl …/v2` (the same deployment via
+`CARDANO_CARD_PATH_PREFIXES=/v2`; the SaaS matches registrations to their NFT by exact URL, so the URL had to differ).
+Receipt: `work/hosted-registration-fixed-submission.json`. When it reaches `RegistrationConfirmed`, switch Railway to
+`AGENT_IDENTIFIER=<its identifier>`, `MASUMI_LOVELACE_PER_USD=fixed`, `MASUMI_FEE_LOVELACE=20000000` and redeploy.
+Cardano fixed pricing in the SaaS payload takes `{asset: "", amount: "<lovelace>"}` with no `decimals`.
+
 ## Who can buy
 
 The hosted SaaS key is **seller-only** (`/pay/api/v1/purchase` and `/wallet` return 404), our local node (0.22) is
