@@ -31,7 +31,7 @@ ADDRESS = json.loads(os.environ["DELIVERY_ADDRESS"])
 FINAL = {"paid", "refunded", "result_submitted", "manual_review", "quote_rejected", "quote_expired",
          "payment_creation_unknown", "expired"}
 # v1 purchase() on /v3 never empties Agentcard's single Amazon cart, so the ask says so (Ezra's 2026-10-07 lesson).
-EMPTY_CART = "Start from an empty cart and buy only this:"
+EMPTY_CART = "Start from an empty cart: remove anything already in it, then add only what this message asks for:"
 
 store = Store(str(ROOT / "chat/data/buyer.db"))
 seller = httpx.AsyncClient(base_url=SELLER, timeout=120)
