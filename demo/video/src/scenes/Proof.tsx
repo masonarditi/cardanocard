@@ -28,10 +28,11 @@ export const Proof: React.FC = () => {
         return (
           <div key={s.label} style={{position: 'absolute', left: left - 170, top: 400, width: 340, textAlign: 'center', opacity: p,
             transform: `translateY(${(1 - p) * 14}px)`}}>
-            <Mono size={24} color={T.text}>{s.t}</Mono>
-            <div style={{width: 18, height: 18, borderRadius: 9, background: T.cardano, margin: '22px auto',
-              boxShadow: `0 0 0 6px rgba(0,51,173,0.12)`}} />
-            <div style={{fontSize: 30, fontWeight: 600, letterSpacing: -0.6}}>{s.label}</div>
+            <div style={{height: 40}}><Mono size={24} color={T.text}>{s.t}</Mono></div>
+            {/* pinned to the timeline (top 470 = block top 400 + 70), independent of the text above */}
+            <div style={{position: 'absolute', left: 170 - 9, top: 70 - 9, width: 18, height: 18, borderRadius: 9,
+              background: T.cardano, boxShadow: `0 0 0 6px rgba(0,51,173,0.12)`}} />
+            <div style={{marginTop: 58, fontSize: 30, fontWeight: 600, letterSpacing: -0.6}}>{s.label}</div>
             <Mono size={20} style={{display: 'block', marginTop: 8}}>{s.sub}</Mono>
           </div>
         );

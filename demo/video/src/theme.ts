@@ -1,13 +1,16 @@
 import {loadFont as loadSans} from '@remotion/google-fonts/Inter';
+import {loadFont as loadCode} from '@remotion/google-fonts/JetBrainsMono';
 
 const sans = loadSans('normal', {weights: ['300', '400', '500', '600', '700'], subsets: ['latin']});
+const code = loadCode('normal', {weights: ['400'], subsets: ['latin']});
 
 // Masumi brand (2503 brand guidelines, masumi.network): Neutral 100 background, black type, Electric Pink accent, Inter.
 // Cardano brand (cardano.org/brand-assets): Blue #0033AD. One meaning per color:
 // pink = masumi (agents, escrow), blue = cardano (on-chain, the card), green = success.
 export const T = {
   sans: sans.fontFamily,
-  mono: sans.fontFamily, // one typeface everywhere: labels and code use Inter too
+  mono: sans.fontFamily, // Inter everywhere, labels included
+  code: code.fontFamily, // the only exception: request/response bodies
   bg: '#F5F5F5',
   panel: '#FFFFFF',
   line: '#E3E3E3',

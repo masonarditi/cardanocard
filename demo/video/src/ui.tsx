@@ -73,7 +73,7 @@ export const Typed: React.FC<{lines: {text: string; color?: string}[]; start: nu
     const frame = useCurrentFrame();
     let budget = Math.max(0, (frame - start) * cps);
     return (
-      <div style={{fontFamily: T.mono, fontSize: size, lineHeight: 1.6, whiteSpace: 'pre'}}>
+      <div style={{fontFamily: T.code, fontSize: size, lineHeight: 1.6, whiteSpace: 'pre'}}>
         {lines.map((line, i) => {
           const shown = line.text.slice(0, Math.max(0, Math.floor(budget)));
           budget -= line.text.length;
