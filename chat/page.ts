@@ -11,7 +11,7 @@ const STEPS = ["Quote", "Face ID", "Escrow", "Checkout"];
 const at: Record<Stage, number> = { approve: 1, approved: 2, locked: 3, checkout: 3, ordered: 5, refunding: 4, refunded: 5 };
 const headline: Record<Stage, string> = {
   approve: "Approve this purchase", approved: "Approved. Locking escrow…", locked: "Escrow locked on Cardano",
-  checkout: "Placing your order…", ordered: "Ordered", refunding: "Refunding your tADA…", refunded: "Refunded",
+  checkout: "Placing your order…", ordered: "Ordered", refunding: "Refunding your escrow…", refunded: "Refunded",
 };
 const FACE_ID = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V6.5A2.5 2.5 0 0 1 6.5 4H8M16 4h1.5A2.5 2.5 0 0 1 20 6.5V8M20 16v1.5a2.5 2.5 0 0 1-2.5 2.5H16M8 20H6.5A2.5 2.5 0 0 1 4 17.5V16"/><path d="M9 9.2v1.3M15 9.2v1.3M12.3 9.2v3.6h-.9M9.6 15.4c1.4 1.1 3.4 1.1 4.8 0"/></svg>`;
 

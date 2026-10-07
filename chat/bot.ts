@@ -27,8 +27,8 @@ const CITY = (({ city, state }) => city ? `${city}, ${state}` : "you")(JSON.pars
 const DATA = `${import.meta.dir}/data`, PUBLIC_ASSETS = `${import.meta.dir}/../demo/video/public`;
 const KEYS = `${DATA}/passkeys.json`, SEEN = `${DATA}/seen.json`;
 const GREETING = /^(hi|hey|hello|yo|start|contact)\b/i;
-const VERB = /^(?:(?:can you|could you|please)\s+)?(?:buy|get|order|grab)\s+(?:me\s+)?/i;
-const PRICE = /\s+(?:under|below|for under|for less than|less than|max|up to)\s+\$?(\d+(?:\.\d{1,2})?)\s*[.!?]*$/i;
+const VERB = /\b(?:buy|get|order|grab)\s+(?:me\s+)?/i;
+const PRICE = /(?:\s+(?:under|below|for under|for less than|less than|max|up to)\s+|\s*<\s*)\$?(\d+(?:\.\d{1,2})?)\s*[.!?]*$/i;
 
 type Quote = { merchant: string; items: { name: string }[]; subtotal_cents: number; authorization_ceiling_cents: number };
 type Order = { name: string; cents: number; id: string };
@@ -144,7 +144,7 @@ async function follow(job: Job) {
     if (p === "refund_due" || p === "refunded") await once("declined", async () => {
       await showCard(job, "refunding");
       const reason = v.purchase?.reason;
-      await job.space.send((reason === "over_budget" ? `Nothing on Amazon matched under $${job.max}, so I didn't buy anything.`
+      await job.space.send((reason === "over_budget" ? `The Amazon cart came to more than your $${job.max} limit, so I didn't buy anything.`
         : reason === "no_cart" ? "I couldn't find a clear match, so I didn't buy anything."
         : SANDBOX && reason === "declined" && job.quoted ? "Amazon didn't accept the card. This is Agentcard's sandbox card, so no real order was placed."
         : "The order didn't go through.") + ` Nothing was charged, and your ${job.fee} is on its way back.`);
@@ -186,12 +186,12 @@ Bun.serve({
     "/avatar.png": () => new Response(AVATAR, { headers: { "content-type": "image/png" } }),
     "/a/:t": (req) => {
       const job = byToken(req.params.t);
-      return job?.quote ? html(page(view(job))) : new Response("Not found", { status: 404 });
+      return job ? html(page(view(job))) : new Response("Not found", { status: 404 });
     },
     "/a/:t/state": (req) => Response.json({ stage: byToken(req.params.t)?.stage }),
     "/og/:t": async (req) => {
       const job = byToken(req.params.t);
-      if (!job?.quote) return new Response("Not found", { status: 404 });
+      if (!job) return new Response("Not found", { status: 404 });
       const stage = (new URL(req.url).searchParams.get("s") ?? job.stage) as Stage;
       return new Response(await statusCard(view(job, stage)), { headers: { "content-type": "image/png", "cache-control": "public, max-age=31536000" } });
     },
@@ -269,10 +269,13 @@ async function handle(space: Space, message: any) {
     if (!greeting) await space.send(`Tell me what you want and your budget, like "Trident gum from Amazon under $5".`);
     return;
   }
-  const ask = text.replace(PRICE, "").replace(VERB, "").trim(), max = Number(price?.[1] ?? 20);
+  // Keep only what follows "buy", minus the store (the agent shops Amazon) and trailing punctuation.
+  const after = VERB.test(text) ? text.slice(text.search(VERB)).replace(VERB, "") : text;
+  const ask = after.replace(PRICE, "").replace(/\s+(?:on|from|at)\s+amazon\b/i, "").replace(/[\s,.;!?]+$/, "").trim();
+  const max = Number(price?.[1] ?? 20);
   await message.react("👍").catch(() => {});
   await space.send(`Looking for ${ask} under $${max}…`);
-  const { job_id, fee, quoted } = await buyer("/jobs", { ask, max_usd: max });
+  const { job_id, fee, quoted } = await buyer("/jobs", { ask: `${ask} from Amazon`, max_usd: max });
   const job: Job = { id: job_id, space, platform: message.platform, token: crypto.randomUUID().replaceAll("-", ""),
     stage: "quote", ask, max, fee, quoted };
   jobs.set(job_id, job);
