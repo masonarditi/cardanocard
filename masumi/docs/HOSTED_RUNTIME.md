@@ -126,6 +126,27 @@ V1-only, and V2 purchasing arrived in masumi-payment-service **0.28.0**. A buyer
 2. Any agent/operator running masumi-payment-service ≥ 0.28 with a funded Preprod purchasing wallet, calling
    `/start_job` here and then `POST /purchase` on their node with the returned terms (`paymentSourceType:
    Web3CardanoV2`, `Amounts` = `RequestedFunds`).
+3. **Our own V2 buyer node** (`infra/masumi-v2buyer/`, payment-service 0.29.0 on `127.0.0.1:3002`, separate compose
+   project/DB) driven by `scripts/v2_hire.py` — this is what stood in for Sokosumi on 2026-10-07. The 0.29/0.28 images
+   ship without their `packages/` workspace, so `prisma:seed` cannot run: the admin key is inserted as a plain
+   `ApiKey` row (the server hashes/encrypts it on restart) and `v2_hire.py setup` creates the V2 Preprod source with
+   Masumi's default admin wallets (2-of-3, 7 min cooldown), which derives the canonical contract
+   `addr_test1wzs4e6…` / policy `67ab0c92…`; it refuses anything else. The purchasing wallet is the funded buyer
+   `2dbca0e7…` exported from the 0.22 node (`work/.buyer-wallet-export.json`, gitignored).
+
+## End-to-end on the listed CardanoCard agent (2026-10-07, real card)
+
+Agent `67ab0c92…36cbc1000000` (`/v3`, Fixed 20 tUSDM, seller `37d35cc9…`), bought from our V2 buyer node, Agentcard
+**production** (Mason's card) on Railway. Both legs verified on NOWNodes Preprod (`valid_contract: true`):
+
+| job | outcome | transactions |
+|---|---|---|
+| `c88ceef6…` | `over_budget` ($14.39 Trident cart vs $10) → no charge → **refunded** (`RefundWithdrawn`) | fund `a5cb62ef…c332575` (block 5263930) → refund request `3e4a9461…d83f0f7` → seller authorize `8f904f05…6de51a5` → refund withdrawn `a35888c0…ecd8023` (block 5263958) |
+| `991d47ac…` | Amazon order `8fd31445-4574-4cc0-a075-b15516a2d9e0`, Trident 14-pack $1.32 → `result_submitted` → payout after unlock (18:29 SGT) | fund `76c50351…14e39e1` (block 5263951) → result `238d65b6…708475f` (block 5263957) → withdraw: see `work/v2-hire/991d47ac….json` |
+
+Lessons: the v1 `purchase()` never empties Agentcard's single Amazon cart, so a failed job's items reappear; the
+second hire put "Start from an empty cart … cheapest listing" into the ask and used a $20 budget
+(`work/v2-hire-request-2.json`). Refund timing on V2: request → hosted authorize → buyer withdraw took ~11 minutes.
 
 Evidence: NOWNodes/Blockfrost inclusion checks work for V2 transactions; the strict payout/refund decoder is V1-only,
 so hosted settlements are reported as observed (not strictly verified) until the V2 datum layout is mapped.

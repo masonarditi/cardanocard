@@ -1,0 +1,47 @@
+# A second, V2-capable Masumi payment node (0.29.0) used only as a BUYER against the hosted CardanoCard agent
+# (Web3CardanoV2). Separate compose project, database and port from the 0.22 node in ../masumi. Reads the same
+# ../masumi/.env. The 0.29 image ships without its workspace packages, so `prisma:seed` cannot run: the admin key
+# and the V2 payment source are created by scripts/v2_buyer_node.py instead of the seed.
+name: cardano-card-v2buyer
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: masumi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run scripts/prepare_masumi.py first}
+      POSTGRES_DB: masumi_payment
+    volumes:
+      - v2buyer_db:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U masumi -d masumi_payment"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  payment:
+    image: ghcr.io/masumi-network/masumi-payment-service:0.29.0
+    ports:
+      - "127.0.0.1:3002:3001"
+    environment:
+      DATABASE_URL: postgresql://masumi:${POSTGRES_PASSWORD}@postgres:5432/masumi_payment?schema=public
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Run scripts/prepare_masumi.py first}
+      ADMIN_KEY: ${ADMIN_KEY:?Run scripts/prepare_masumi.py first}
+      BLOCKFROST_API_KEY_PREPROD: ${BLOCKFROST_API_KEY_PREPROD:?Add a Blockfrost Preprod key to infra/masumi/.env}
+      BLOCKFROST_API_KEY_MAINNET: ""
+      PORT: "3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >-
+      sh -c "npm run prisma:migrate && npm start"
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://localhost:3001/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 90s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  v2buyer_db:
