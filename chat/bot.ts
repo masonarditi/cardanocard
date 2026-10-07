@@ -26,7 +26,8 @@ const VERBOSE = process.env.CHAT_VERBOSE !== "0";
 const clock = (at: number) => new Date(at * 1000).toLocaleTimeString("en-GB", { timeZone: "Asia/Singapore" });
 const SANDBOX = (process.env.AGENTCARD_ENV ?? "sandbox") !== "prod";
 const CITY = (({ city, state }) => city ? `${city}, ${state}` : "you")(JSON.parse(process.env.DELIVERY_ADDRESS ?? "{}"));
-const DATA = `${import.meta.dir}/data`, PUBLIC_ASSETS = `${import.meta.dir}/../demo/video/public`;
+// CHAT_DATA / CHAT_ASSETS: hosted deployments keep state on a volume and ship the assets beside the bot.
+const DATA = process.env.CHAT_DATA ?? `${import.meta.dir}/data`, PUBLIC_ASSETS = process.env.CHAT_ASSETS ?? `${import.meta.dir}/../demo/video/public`;
 const KEYS = `${DATA}/passkeys.json`, SEEN = `${DATA}/seen.json`;
 const GREETING = /^(hi|hey|hello|yo|start|contact)\b/i;
 const VERB = /\b(?:buy|get|order|grab)\s+(?:me\s+)?/i;
@@ -172,7 +173,12 @@ async function follow(job: Job) {
       await job.space.send(`I couldn't find a good match for that under $${job.max}. Try adding the brand, or "from Amazon".`);
       return;
     }
-    if (["quote_expired", "manual_review", "payment_creation_unknown", "expired"].includes(p) || v?.pay_error) {
+    if (p === "manual_review") {
+      // An order may exist (over budget, past the deadline, or the card provider never answered): never claim "nothing charged".
+      await job.space.send(`I'm checking this order with the card provider before doing anything else. Your ${job.fee} stays protected in escrow until it's settled.`);
+      return;
+    }
+    if (["quote_expired", "payment_creation_unknown", "expired"].includes(p) || v?.pay_error) {
       await job.space.send(!job.approved && p.endsWith("expired") ? "The approval window closed, so I didn't buy anything."
         : "Something went wrong on my end, so I stopped before buying anything. Nothing was charged.");
       return;

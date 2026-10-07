@@ -93,7 +93,10 @@ def configured_engine():
             purchaser = (AgentCardPurchaser(store, ReplayTransport(store, os.getenv("REPLAY_SCENARIO", "success")))
                          if backend == "replay" else FakePurchaser(store, os.getenv("FAKE_SCENARIO", "success")))
         # The operator kill switch (/ops) sits in front of every purchaser so a rehearsal behaves like the real thing.
-        return Engine(store, escrow, GuardedPurchaser(purchaser, store))
+        engine = Engine(store, escrow, GuardedPurchaser(purchaser, store))
+        # Uncertain purchases are re-inspected at most this often (each inspection is a provider read under the lock).
+        engine.INSPECT_SECONDS = int(os.getenv("CARDANO_CARD_INSPECT_SECONDS", "30"))
+        return engine
     except Exception:
         store.close()
         raise

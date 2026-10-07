@@ -181,6 +181,8 @@ async def resolve_no_charge(engine, job_id, note):
         job = engine.get(job_id)
         if job["phase"] not in RESOLVABLE:
             raise HTTPException(409, f"Only {sorted(RESOLVABLE)} jobs can be resolved; this one is {job['phase']}")
+        if job.get("result") or (job.get("outcome") or {}).get("status") == "success":
+            raise HTTPException(409, "This job holds a confirmed order; refunding it would charge the card and refund the buyer")
         job["outcome"] = {"status": "failed", "reason": "cancelled"}
         engine.change(job, "refund_due", f"Operator resolved as no charge: {note}")
     log = engine.store.get("ops", "log") or []

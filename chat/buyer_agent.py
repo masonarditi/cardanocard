@@ -9,6 +9,7 @@ import json
 import os
 import secrets
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -24,7 +25,8 @@ from cardano_card.preprod_buyer import PreprodBuyer, loopback_url
 from cardano_card.store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
-S = dotenv_values(ROOT / "masumi/.env.preprod")
+S = dotenv_values(ROOT / "masumi/.env.preprod")  # local seller only; absent in the hosted deployment
+DATA = Path(os.getenv("CHAT_DATA") or ROOT / "chat/data")
 V3 = os.getenv("V3_AGENT_URL", "").rstrip("/")
 SELLER = V3 or os.getenv("CARDANO_CARD_URL", "http://127.0.0.1:8787")
 ADDRESS = json.loads(os.environ["DELIVERY_ADDRESS"])
@@ -33,13 +35,14 @@ FINAL = {"paid", "refunded", "result_submitted", "manual_review", "quote_rejecte
 # v1 purchase() on /v3 never empties Agentcard's single Amazon cart, so the ask says so (Ezra's 2026-10-07 lesson).
 EMPTY_CART = "Start from an empty cart: remove anything already in it, then add only what this message asks for:"
 
-store = Store(str(ROOT / "chat/data/buyer.db"))
+store = Store(str(DATA / "buyer.db"))
 seller = httpx.AsyncClient(base_url=SELLER, timeout=120)
 if V3:
     sys.path.insert(0, str(ROOT / "masumi/scripts"))
     import v2_hire as v2
-    v2node = httpx.AsyncClient(base_url=v2.NODE + "/", timeout=60,
-                               headers={"token": dotenv_values(ROOT / "masumi/infra/masumi/.env")["ADMIN_KEY"]})
+    # Node key from the environment when deployed; the laptop file otherwise.
+    v2node = httpx.AsyncClient(base_url=v2.NODE + "/", timeout=60, headers={"token": os.getenv("V2_BUYER_NODE_KEY")
+                               or dotenv_values(ROOT / "masumi/infra/masumi/.env")["ADMIN_KEY"]})
     FEE = "20 tUSDM"
 else:
     node = httpx.AsyncClient(base_url=loopback_url(S["BUYER_PAYMENT_SERVICE_URL"]) + "/",
@@ -127,9 +130,19 @@ async def approve(job_id: str):
     if not saved or saved["approved"]:
         raise HTTPException(409, "Nothing waiting for approval")
     if saved.get("v3"):
+        # Only pay while the agent still waits and the on-chain pay-by deadline leaves room for the lock to land.
+        status = await seller_status(job_id)
+        pay_by = int(saved["payload"]["payByTime"]) / 1000
+        if status["phase"] != "awaiting_payment" or pay_by - time.time() < 180:
+            raise HTTPException(409, "The payment window for this job has closed; ask again")
         # Checkpoint first: an escrow payment is never sent twice, even after a timeout.
         store.put("chat_jobs", job_id, {**saved, "approved": True})
-        response = await v2node.post("purchase/", json=saved["payload"])
+        try:
+            response = await v2node.post("purchase/", json=saved["payload"])
+        except httpx.ConnectError:
+            # Nothing reached the node, so the approval can be retried.
+            store.put("chat_jobs", job_id, saved)
+            raise HTTPException(502, "The buyer node is unreachable; try approving again") from None
         if response.status_code >= 400:
             store.put("chat_jobs", job_id, {**saved, "approved": True, "pay_error": response.text[:300]})
             raise HTTPException(502, "The buyer node refused the escrow payment")
@@ -176,6 +189,12 @@ async def advance_v3(job_id, saved):
     if status["phase"] == "refund_due" and (status.get("purchase") or {}).get("status") == "failed" and not saved.get("refund_requested"):
         saved["refund_requested"] = True
         store.put("chat_jobs", job_id, saved)
-        (await v2node.post("purchase/request-refund", json={"network": "Preprod", "blockchainIdentifier": identifier})).raise_for_status()
+        try:
+            (await v2node.post("purchase/request-refund", json={"network": "Preprod", "blockchainIdentifier": identifier})).raise_for_status()
+        except Exception:
+            # Not sent or refused (lock not settled yet, node busy): try again on the next pass.
+            saved["refund_requested"] = False
+            store.put("chat_jobs", job_id, saved)
+            raise
     saved["done"] = status["phase"] in FINAL and status["phase"] != "result_submitted"
     store.put("chat_jobs", job_id, saved)

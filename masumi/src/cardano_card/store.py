@@ -43,7 +43,8 @@ class Store:
                             (namespace, key, canonical(data)))
 
     def jobs(self):
-        return [json.loads(row[0]) for row in self.db.execute("SELECT data FROM records WHERE namespace='jobs'")]
+        # Creation order (the upsert keeps the rowid); without it SQLite returns index order, i.e. random UUID order.
+        return [json.loads(row[0]) for row in self.db.execute("SELECT data FROM records WHERE namespace='jobs' ORDER BY rowid")]
 
     def save_job(self, job, message):
         created_at = time.time()

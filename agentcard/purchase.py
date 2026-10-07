@@ -76,6 +76,11 @@ def _purchase(ask, max_total_usd, address, rec, request_id):
                      reply=r.get("reply"), unmatched=r.get("unmatched"), conversation_id=cid)
     if cart["totalCents"] > round(min(max_total_usd, CARD_LIMIT_USD) * 100):
         return _fail("over_budget", total_usd=cart["totalCents"] / 100, conversation_id=cid)
+    # Agentcard keeps one Amazon cart per user: a leftover from an earlier job would be bought alongside this one.
+    # Non-conversational purchases are one item (any quantity); anything else is not the cart that was asked for.
+    if len(cart.get("items") or []) != 1:
+        return _fail("no_cart", detail="cart does not hold exactly one line item",
+                     items=[i.get("name") for i in (cart.get("items") or [])], conversation_id=cid)
 
     rec.update(conversation_id=cid, cart=cart, confirm_sent=True)
     _save(request_id, rec)

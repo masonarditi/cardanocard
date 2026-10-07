@@ -88,23 +88,29 @@ class HostedMasumiEscrow(MasumiEscrow):
         return httpx.AsyncClient(base_url=self.url, headers={self.auth_header: self.api_key}, timeout=30,
                                  follow_redirects=False)
 
+    @staticmethod
+    def _body(response):
+        # A malformed or non-JSON reply is a transport problem (the engine retries), never a payment identity
+        # failure: observe() maps ValueError onto FundsOrDatumInvalid, which parks the job in manual_review.
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise ConnectionError('Hosted payment-service reply is not JSON') from exc
+        if not isinstance(data, dict) or data.get('status') != 'success' or not isinstance(data.get('data'), dict):
+            raise ConnectionError('Unexpected hosted payment-service response')
+        return data['data']
+
     async def post(self, route, payload):
         async with self.client() as client:
             response = await client.post(route.strip('/'), json=payload)
             response.raise_for_status()
-            data = response.json()
-            if data.get('status') != 'success' or not isinstance(data.get('data'), dict):
-                raise ValueError('Unexpected hosted payment-service response')
-            return data['data']
+            return self._body(response)
 
     async def get(self, route, params=None):
         async with self.client() as client:
             response = await client.get(route.strip('/'), params=params)
             response.raise_for_status()
-            data = response.json()
-            if data.get('status') != 'success' or not isinstance(data.get('data'), dict):
-                raise ValueError('Unexpected hosted payment-service response')
-            return data['data']
+            return self._body(response)
 
     async def validate_payout(self, payment=None):
         """Bind the hosted V2 Preprod source to the saved contract; the payout address is fixed by configuration."""

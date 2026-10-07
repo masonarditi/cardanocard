@@ -20,6 +20,20 @@ class Engine:
         self.lock = asyncio.Lock()
 
     RETRY_SECONDS = 120
+    INSPECT_SECONDS = 0  # configured_engine sets the runtime throttle (CARDANO_CARD_INSPECT_SECONDS, default 30)
+
+    async def reconcile(self, job):
+        """Read-only inspection of an uncertain purchase. Throttled: each inspection is a provider read made while the
+        engine lock is held. At the result deadline an outcome that is still unknown goes to the operator (/ops
+        Resolve) instead of being polled forever."""
+        if self.clock() >= job["payment"]["submitResultTime"] - 60:
+            self.change(job, "manual_review", "Purchase outcome still unknown at the result deadline; check the card, then resolve from /ops")
+            return
+        if self.clock() - job.get("inspected_at", 0) < self.INSPECT_SECONDS:
+            return
+        job["inspected_at"] = self.clock()
+        outcome = await self.purchaser.inspect(job["id"])
+        await self.accept(job, outcome)
 
     def change(self, job, phase, message):
         job["phase"] = phase
@@ -183,8 +197,7 @@ class Engine:
             elif phase in {"purchasing", "reconciling", "processing"}:
                 # Keep resolving the purchase. A confirmed order still submits its result, which
                 # disputes the refund instead of letting it auto-collect after the deadline.
-                outcome = await self.purchaser.inspect(job["id"])
-                await self.accept(job, outcome)
+                await self.reconcile(job)
             elif phase == "submitting_result":
                 await self.retry_submit(job)
             elif phase != "manual_review":
@@ -204,8 +217,7 @@ class Engine:
             return
         # Recovered/uncertain calls may only inspect. Never restart checkout after a crash.
         if phase in {"purchasing", "reconciling", "processing"}:
-            outcome = await self.purchaser.inspect(job["id"])
-            await self.accept(job, outcome)
+            await self.reconcile(job)
             return
         # Submit-result and refund authorization requests might have succeeded before a timeout.
         # Never replay the merchant purchase. The same result hash may be resent once the node is
