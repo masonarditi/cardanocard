@@ -10,6 +10,8 @@ the purchase fails."
 ## Repo layout
 - `agentcard/` — Agentcard side (owner: Mason). Exposes `purchase()`.
 - `masumi/` — Masumi agent (owner: Ezra). Calls `purchase()` through `ModulePurchaser` (`PURCHASE_BACKEND=mason`).
+- `chat/` — iMessage front door (owner: Mason, Photon Spectrum): a buyer agent that hires Cardano Card over MIP-003,
+  approves escrow with Face ID (passkey) and pays from Mason's Preprod buyer wallet. `chat/run.sh`; sandbox Agentcard only.
 
 ## The contract (do not change without telling both people)
 
@@ -140,7 +142,8 @@ committed. 2026-10-07 on Ezra's machine: sandbox org creds + a freshly linked sa
 (linked via `/connect/start` + fixed sandbox code 111111; no card needed, confirm returns `sandbox_mode`); prod org
 creds in `.env.prod` (same as `masumi/.env`) but **no prod user token** — that needs Mason's phone code
 (`setup_vault.py --connect <Mason's phone>` with `AGENTCARD_ENV=prod`) and means his machine stops using its copy.
-Mason's machine still holds sandbox user `usr_31f5c356…` and prod user `usr_f9fe7033…` (the real card).
+Mason's machine holds sandbox user `usr_31f5c356…`. The prod user `usr_f9fe7033…` (the real card) was handed to Ezra for
+Railway on 2026-10-07; Mason's machine no longer uses a prod token.
 Refresh tokens are single-use: only ONE machine may use a token file. Hand it over explicitly and stop using
 the old copy. If a refresh fails with `invalid_refresh_token`, re-link with `setup_vault.py --connect <Mason's phone>`
 (sandbox code 111111) and check the user id (prod must stay `usr_f9fe…`, which has the real card).
