@@ -25,8 +25,13 @@ class HostedMasumiEscrow(MasumiEscrow):
     automatic_requested_refund = False
     simulated = False
 
+    # Minutes from now for payByTime, submitResultTime, unlockTime, externalDisputeUnlockTime. The node needs
+    # result >= +15m, payBy <= result-5m, unlock >= result+15m, dispute >= unlock+15m. A marketplace buyer's node may
+    # take several minutes to submit the funding tx, so the hosted default leaves payBy at +12m (V1 local uses +5m).
+    DEFAULT_DEADLINES_MIN = (12, 30, 45, 60)
+
     def __init__(self, url, api_key, agent_identifier, seller_vkey, payout_address, fee_lovelace, source_index=0,
-                 lovelace_per_usd=None):
+                 lovelace_per_usd=None, deadlines_min=None):
         parsed = urlparse(url)
         if url.rstrip('/') + '/' != HOSTED_URL or parsed.scheme != 'https':
             raise ValueError('The hosted adapter only talks to Masumi\'s hosted Preprod payment service')
@@ -44,6 +49,10 @@ class HostedMasumiEscrow(MasumiEscrow):
         self.payout_address, self.fee_lovelace = payout_address, str(int(fee_lovelace))
         # Index into the agent's registered supportedPaymentSources (the hosted V2 API requires it).
         self.source_index, self.contract = int(source_index), None
+        mins = tuple(int(x) for x in (deadlines_min or self.DEFAULT_DEADLINES_MIN))
+        if len(mins) != 4 or not (0 < mins[0] <= mins[1] - 5 and mins[1] >= 15 and mins[2] >= mins[1] + 15 and mins[3] >= mins[2] + 15):
+            raise ValueError('Deadlines must be 4 minute offsets satisfying the node minimums (payBy<=result-5, result>=15, unlock>=result+15, dispute>=unlock+15)')
+        self.deadlines_min = mins
         # Dynamic pricing: escrow per job = the buyer's USD budget at a fixed demo rate, so the payout reimburses the
         # card that fronted the purchase. fee_lovelace is the floor (and the amount when no rate is configured).
         if lovelace_per_usd is not None and str(lovelace_per_usd).lower() != 'fixed' and (
@@ -56,6 +65,11 @@ class HostedMasumiEscrow(MasumiEscrow):
         self.fixed_price = str(lovelace_per_usd).lower() == 'fixed' if lovelace_per_usd is not None else False
         if self.fixed_price:
             self.lovelace_per_usd = None
+
+    def deadlines(self, now):
+        from datetime import timedelta
+        return {key: (now + timedelta(minutes=minutes)).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+                for key, minutes in zip(('payByTime', 'submitResultTime', 'unlockTime', 'externalDisputeUnlockTime'), self.deadlines_min)}
 
     def client(self):
         # No redirects: a credential-bearing redirect off the fixed host must fail, never follow.
@@ -148,8 +162,10 @@ class HostedMasumiEscrow(MasumiEscrow):
         funds = self.funds(data.get('RequestedFunds'))
         if lovelace is not None and funds != [{'unit': '', 'amount': lovelace}]:
             raise ValueError('Hosted service changed the requested escrow amount')
-        if lovelace is None and (len(funds) != 1 or funds[0]['unit'] != '' or int(funds[0]['amount']) > self.MAX_LOVELACE):
-            raise ValueError('Fixed-price agent must resolve to a single ADA amount of at most 100 test ADA')
+        # Fixed price comes from the registry: a single asset (ADA, or a stablecoin such as tUSDM on Preprod).
+        if lovelace is None and (len(funds) != 1 or int(funds[0]['amount']) > self.MAX_LOVELACE or
+                                 (funds[0]['unit'] and not re.fullmatch('[0-9a-f]{56,}', funds[0]['unit']))):
+            raise ValueError('Fixed-price agent must resolve to a single ADA/token amount of at most 100 units')
         result.update(agentIdentifier=self.agent_identifier, sellerVKey=self.seller_vkey, inputHash=expected,
                       RequestedFunds=funds, smartContractAddress=route['smartContractAddress'],
                       payoutAddress=self.payout_address, paymentSourceType=SOURCE_TYPE, rail='hosted-v2',

@@ -179,8 +179,9 @@ payment creation (node minimums), refunds in minutes.
 - Hosted runtime (2026-10-07): Railway runs the real agent via Masumi's hosted payment service (V2 rail,
   `CARDANO_CARD_MODE=hosted`, public MIP-003 routes) with Agentcard **sandbox** purchasing. Two SaaS agents: the
   original Dynamic one (`…1c38c6000000`, root URL; Sokosumi never lists Dynamic agents) and **"Cardano Card"**, Fixed
-  20 ADA, URL `/v2` (`…d06e8c000000`) — the one Railway serves. Each SaaS agent has its own selling wallet (Fixed
-  agent: `79e95441…`); never use the registry record's `SmartContractWallet` as `SELLER_VKEY`. See
+  20 ADA, URL `/v2` (`…d06e8c000000`), and **CardanoCard**, Fixed 20 **tUSDM**, URL `/v3` (`…36cbc1000000`) — the
+  one Railway serves, because Sokosumi bills only tUSDM on Preprod. Each SaaS agent has its own selling wallet
+  (CardanoCard: `37d35cc9…`); never use the registry record's `SmartContractWallet` as `SELLER_VKEY`. See
   `masumi/docs/HOSTED_RUNTIME.md`.
 - Chain evidence: NOWNodes Preprod (`NOWNODES_API_KEY` in `masumi/infra/masumi/.env`, default when set) or Blockfrost
   (`BLOCKFROST_API_KEY_PREPROD`); `CHAIN_PROVIDER` forces one. Verifier requires `genesis.network_magic == 1`.

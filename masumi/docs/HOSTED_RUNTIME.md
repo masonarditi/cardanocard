@@ -29,6 +29,29 @@ Since 2026-10-07 the public Railway service runs the **real** agent, not the reg
 - The hosted `/payment` API requires `supportedPaymentSourceIndex` and `RequestedFunds` for V2 Dynamic agents; the
   adapter sends index 0 (the agent's only source).
 
+## Verified against the payment-service 0.29 source (2026-10-07)
+
+- **Refunds on V2:** the seller's `POST /payment/authorize-refund` is accepted while `onChainState` is `RefundRequested`
+  or `Disputed` (`src/routes/api/payments/authorize-refund/index.ts`), and the buyer's node collects from
+  `RefundAuthorized` immediately — or on its own from `RefundRequested`/`FundsLocked` once `submitResultTime + 10 min`
+  has passed with no result (`packages/payment-source-v2/.../purchases/collect-refund/service.ts`). So the engine's
+  behaviour on the hosted rail (authorize as soon as the buyer requests) is valid and only speeds the refund up.
+- **Sokosumi's paid-job schema** (`packages/masumi/src/schemas/agent/start_job.schema.ts`) needs `id`, `input_hash`,
+  `identifierFromPurchaser`, `blockchainIdentifier`, the four times as integers, `agentIdentifier`, `sellerVKey`, and
+  optionally `paymentSourceType` / `supportedPaymentSourceIndex`; `/status` needs `status` ∈ awaiting_payment |
+  awaiting_input | running | completed | failed with `result` on completed. Both are covered by tests.
+- **Purchaser nonce:** the payment service takes 14–26 hex chars; `identifier_from_purchaser` accepts that range.
+- **Deadlines:** hosted default `MASUMI_DEADLINES_MIN=12,30,45,60` (payBy, result, unlock, dispute) so a marketplace
+  buyer's node has 12 minutes to land the funding tx; payout therefore lands ~45–50 min after the hire.
+
+## Operator tooling
+
+- `GET /diagnostics` (bearer token; `?probe=true` also calls the hosted payment source and Agentcard) — shows the wired
+  rails, the Agentcard user on the volume and whether its token refreshes. Verified on Railway: `agentcard_probe 200`.
+- `GET /operator/jobs/{job_id}` (bearer token) — the full stored job.
+- `python -m cardano_card.hosted_evidence --job JOB_ID` — pulls that job and verifies its transactions through NOWNodes
+  (or Blockfrost); writes `work/hosted-evidence/JOB_ID.json`. Strict V2 datum decoding is pending (`docs/V2_DATUM_NOTES.md`).
+
 ## Code
 
 - `src/cardano_card/hosted_escrow.py` — `HostedMasumiEscrow` (same engine contract as the local V1 adapter).
@@ -68,6 +91,15 @@ Receipt: `work/hosted-registration-fixed-submission.json`. It reached `Registrat
 `MASUMI_FEE_LOVELACE=20000000`): every job locks exactly 20 tADA. Each SaaS agent gets its own selling wallet — this one
 signs with `79e95441…` (`addr_test1qpu7j4zp…`, funded 10 tADA by Masumi), so `SELLER_VKEY` changed with the agent.
 Cardano fixed pricing in the SaaS payload takes `{asset: "", amount: "<lovelace>"}` with no `decimals`.
+
+## Third registration: tUSDM pricing (what Sokosumi actually bills)
+
+Sokosumi's billable units on Preprod are **tUSDM** (`16a55b2a…0014df10745553444d`), not ADA — an ADA-priced Fixed agent
+is never "billable" and stays hidden. Registered 2026-10-07 ~14:35 SGT: **CardanoCard**, SaaS agent
+`f59af5fc-66e7-47ff-8c7d-569aba1251f1`, URL `…/v3`, Fixed **20 tUSDM**, confirmed within 5 minutes
+(identifier `67ab0c92…36cbc1000000`, selling wallet `37d35cc9…`). Railway serves this one now; `/v3/start_job` returns
+`RequestedFunds [{unit: <tUSDM>, amount: "20000000"}]`. The ADA (`/v2`) and Dynamic (root) entries remain registered
+but unused. SaaS payload: `pricing.prices[{amount:"20", currency:"tUSDM"}]`, source `fixed[{asset:<unit>, amount:"20000000"}]`.
 
 ## Who can buy
 
