@@ -196,3 +196,36 @@ def test_agentcard_home_relocates_files_and_seeds_tokens(tmp_path, monkeypatch):
     out = subprocess.run([sys.executable, "-c", code], cwd=str(Path(__file__).resolve().parents[1]), env=env,
                          capture_output=True, text=True, check=True).stdout.split()
     assert out[0] == str(tmp_path / "home" / ".agentcard_tokens.json") and out[1] == "0o600" and out[2] == "usr_x" and out[3] == "True"
+
+
+def test_vault_approval_waits_for_the_cardholder_then_succeeds(api, monkeypatch):
+    monkeypatch.setattr(v1, "APPROVAL_WAIT_S", 60)
+    link = "https://app.agentcard.sh/a/cauth_x.y"
+    api.buys += [QUOTED,
+                 (200, {"status": "needs_input", "decline_code": "vault_approval_required", "approval_url": link, "charge_status": "none"}),
+                 (200, {"status": "needs_input", "decline_code": "vault_approval_required", "approval_url": link, "charge_status": "none"}),
+                 (200, {"status": "order_placed", "order_id": "ord_approved"})]
+    out = v1.purchase("gum", 5.0, ADDRESS, request_id="job-approve")
+    assert out["status"] == "success" and out["order_id"] == "ord_approved"
+    assert [c.get("confirm") for c in api.calls[1:]] == ["h1", "h1", "h1"], "re-confirms the same cart hash"
+    assert json.loads(v1.LEDGER.read_text())["job-approve"]["approval_url"] == link
+
+
+def test_vault_approval_expiry_is_a_no_charge_failure(api, monkeypatch):
+    monkeypatch.setattr(v1, "APPROVAL_WAIT_S", 60)
+    api.buys += [QUOTED,
+                 (200, {"status": "needs_input", "decline_code": "vault_approval_required", "approval_url": "https://a/1", "charge_status": "none"}),
+                 (200, {"status": "needs_input", "decline_code": "vault_approval_expired", "charge_status": "none"})]
+    out = v1.purchase("gum", 5.0, ADDRESS, request_id="job-expired")
+    assert out["status"] == "failed" and out["reason"] == "approval_required" and out["approval_url"] == "https://a/1"
+
+
+def test_order_id_already_paid_for_by_another_job_is_declined(api):
+    api.buys += [QUOTED, (200, {"status": "order_placed", "order_id": "ord_same"})]
+    assert v1.purchase("gum", 5.0, ADDRESS, request_id="job-first")["status"] == "success"
+    api.buys += [QUOTED, (200, {"status": "order_placed", "order_id": "ord_same"})]
+    out = v1.purchase("gum", 5.0, ADDRESS, request_id="job-second")
+    assert out["status"] == "failed" and out["reason"] == "declined" and out["decline_code"] == "duplicate_order"
+    assert out["first_request_id"] == "job-first"
+    assert v1.inspect_purchase("job-first")["status"] == "success", "the original job keeps its order"
+    assert v1.inspect_purchase("job-second")["decline_code"] == "duplicate_order"
