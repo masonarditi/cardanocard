@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cardano Card · Ops</title><link rel="stylesheet" href="ops.css"><script src="ops.js" defer></script></head>
+<body>
+<header><span class="brand">▧ cardano card <em>ops</em></span><span id="clock" class="muted">—</span><span id="conn" class="pill">not connected</span></header>
+<form id="connect" class="connect"><label for="token">Operator token</label><input id="token" type="password" autocomplete="off" placeholder="CARDANO_CARD_TOKEN"><button>Connect</button></form>
+<main hidden id="main">
+<section id="alerts" class="alerts"></section>
+<section class="tiles">
+  <article class="tile card-tile"><h2>Real card</h2><p class="big" id="card-state">—</p><p class="muted" id="card-note"></p><button id="card-toggle" class="danger">…</button><p class="hint">OFF = every purchase fails as <code>card_disabled</code> (no charge) and refunds the buyer. Takes effect on the next purchase; a checkout already in flight is not interrupted.</p></article>
+  <article class="tile"><h2>Runtime</h2><dl id="runtime"></dl></article>
+  <article class="tile"><h2>Agentcard</h2><dl id="agentcard"></dl></article>
+  <article class="tile"><h2>Masumi escrow service</h2><dl id="hosted"></dl><ul id="payments" class="list"></ul></article>
+  <article class="tile"><h2>Sokosumi listing</h2><dl id="sokosumi"></dl></article>
+  <article class="tile"><h2>Own V1 node</h2><dl id="node"></dl></article>
+</section>
+<section class="panel"><h2>Jobs</h2><table id="jobs"><thead><tr><th>job</th><th>phase</th><th>escrow</th><th>purchase</th><th>ask</th><th>updated</th></tr></thead><tbody></tbody></table></section>
+<section class="panel"><h2>Live events</h2><ol id="events" class="events"></ol></section>
+<section class="panel"><h2>Operator log</h2><ol id="opslog" class="events"></ol></section>
+</main>
+<p id="error" role="alert"></p>
+</body></html>

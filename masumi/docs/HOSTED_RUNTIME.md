@@ -61,6 +61,16 @@ Since 2026-10-07 the public Railway service runs the **real** agent, not the reg
 
 ## Operator tooling
 
+- **`/ops` — the operator page** (open `https://cardanocard-preprod-production.up.railway.app/v3/ops`, paste
+  `CARDANO_CARD_TOKEN`; the token stays in the browser session). Refreshes every 5 s: alerts, the **real-card kill
+  switch**, runtime config, Agentcard probe (user + merchants call), the hosted payment service's recent payments
+  for our agent (on-chain state / next action / errors), the Sokosumi listing (name, credits), our V1 node's health,
+  the last 25 jobs, the live event feed and the operator log. JSON behind it: `GET /ops/status` (`?probe=false`
+  skips the external checks); probes are cached server-side (Agentcard 2 min, hosted 20 s, Sokosumi 5 min, node 1 min).
+- **Card kill switch:** `POST /ops/card {"enabled": false, "note": "…"}` (or the button). Stored in the job store
+  (`ops/card`), so it survives restarts and needs no redeploy. While OFF, `GuardedPurchaser` answers every purchase
+  with `{"status": "failed", "reason": "card_disabled"}` before any Agentcard call — the engine treats it like any
+  definitive no-purchase and refunds the buyer. A checkout already in flight is not interrupted. Default is ON.
 - `GET /diagnostics` (bearer token; `?probe=true` also calls the hosted payment source and Agentcard) — shows the wired
   rails, the Agentcard user on the volume and whether its token refreshes. Verified on Railway: `agentcard_probe 200`.
 - `GET /operator/jobs/{job_id}` (bearer token) — the full stored job.

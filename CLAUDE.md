@@ -196,6 +196,9 @@ payment creation (node minimums), refunds in minutes.
   V2): refund leg job `c88ceef6…` (`over_budget`, refund withdrawn `a35888c0…`) and payout leg job `991d47ac…`
   (Amazon order `8fd31445…`, $1.32, result `238d65b6…`). Hashes/blocks in `masumi/BUILD_STATUS.md`.
   Gotcha: v1 `purchase()` never empties Agentcard's cart — a failed job's items come back; say so in the ask.
+- Operator page: `<runtime>/v3/ops` (bearer `CARDANO_CARD_TOKEN`) — status of every rail + jobs/events + the
+  **real-card kill switch** (`POST /ops/card {"enabled": false}`; stored in the job DB, no redeploy; purchases then
+  fail as `card_disabled` → refund). `masumi/src/cardano_card/ops.py`, docs in `masumi/docs/HOSTED_RUNTIME.md`.
 - Chain evidence: NOWNodes Preprod (`NOWNODES_API_KEY` in `masumi/infra/masumi/.env`, default when set) or Blockfrost
   (`BLOCKFROST_API_KEY_PREPROD`); `CHAIN_PROVIDER` forces one. Verifier requires `genesis.network_magic == 1`.
 - Docs: https://www.masumi.network/dev/masumi/core-concepts/payments and .../refunds-and-disputes

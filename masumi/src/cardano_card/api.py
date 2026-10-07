@@ -20,6 +20,7 @@ from .engine import Conflict, Engine
 from .hosted_escrow import HostedMasumiEscrow
 from .masumi_adapter import MasumiEscrow
 from .models import INPUT_SCHEMA, ProvideInput, StartRequest
+from .ops import GuardedPurchaser, register_ops
 from .providers import FakeEscrow, FakePurchaser, ModulePurchaser
 from .store import Store
 from .event_output import event_line, feed_banner
@@ -91,7 +92,8 @@ def configured_engine():
         else:
             purchaser = (AgentCardPurchaser(store, ReplayTransport(store, os.getenv("REPLAY_SCENARIO", "success")))
                          if backend == "replay" else FakePurchaser(store, os.getenv("FAKE_SCENARIO", "success")))
-        return Engine(store, escrow, purchaser)
+        # The operator kill switch (/ops) sits in front of every purchaser so a rehearsal behaves like the real thing.
+        return Engine(store, escrow, GuardedPurchaser(purchaser, store))
     except Exception:
         store.close()
         raise
@@ -168,6 +170,10 @@ def create_app(engine=None, token=None, background=True, poll_seconds=2, fronten
     def service():
         return app.state.engine
 
+    def purchaser():
+        # The real provider behind the operator kill switch, for backend labelling and local scenario lists.
+        return getattr(service().purchaser, "inner", service().purchaser)
+
     @app.get("/session", dependencies=[Depends(authorized)])
     async def session():
         return {"authenticated": True}
@@ -199,7 +205,7 @@ def create_app(engine=None, token=None, background=True, poll_seconds=2, fronten
         return {"status": "available", "type": "masumi-agent",
                 "simulated_escrow": service().escrow.simulated,
                 "simulated_purchase": service().purchaser.simulated,
-                "purchase_backend": ("staged_fake" if service().purchaser.simulated else "staged_module") if isinstance(service(), StagedEngine) else "replay" if isinstance(service().purchaser, AgentCardPurchaser) and service().purchaser.simulated else "fake" if isinstance(service().purchaser, FakePurchaser) else "external",
+                "purchase_backend": ("staged_fake" if service().purchaser.simulated else "staged_module") if isinstance(service(), StagedEngine) else "replay" if isinstance(purchaser(), AgentCardPurchaser) and purchaser().simulated else "fake" if isinstance(purchaser(), FakePurchaser) else "external",
                 "network": "Preprod" if isinstance(service().escrow, (MasumiEscrow, HostedMasumiEscrow)) else "simulated",
                 "escrow_rail": ("hosted-v2" if isinstance(service().escrow, HostedMasumiEscrow) else
                                 "self-hosted-v1" if isinstance(service().escrow, MasumiEscrow) else "simulated"),
@@ -247,7 +253,7 @@ def create_app(engine=None, token=None, background=True, poll_seconds=2, fronten
     async def local_start(body: LocalStart):
         if not service().escrow.simulated or not service().purchaser.simulated:
             raise HTTPException(404, "Local demo setup requires simulated providers")
-        scenarios = FakeStagedModule.SCENARIOS if isinstance(service(), StagedEngine) else ReplayTransport.SCENARIOS if isinstance(service().purchaser, AgentCardPurchaser) else FakePurchaser.SCENARIOS
+        scenarios = FakeStagedModule.SCENARIOS if isinstance(service(), StagedEngine) else ReplayTransport.SCENARIOS if isinstance(purchaser(), AgentCardPurchaser) else FakePurchaser.SCENARIOS
         if body.scenario not in scenarios:
             raise HTTPException(422, "Unsupported demo scenario")
         # Unfunded jobs cannot start purchasing while the demo scenario is being saved.
@@ -320,6 +326,8 @@ def create_app(engine=None, token=None, background=True, poll_seconds=2, fronten
             raise HTTPException(409, str(exc)) from exc
         return {"simulated": True, "action": action}
 
+    # Operator page + card kill switch (bearer token; the HTML/JS/CSS themselves carry no secrets).
+    register_ops(app, service, authorized)
     return app
 
 

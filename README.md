@@ -72,6 +72,7 @@ Trident gum under $10" and approving the escrow with Face ID.
 | Purchasing | Agentcard Purchase API client: `purchase()` (one-shot) and a staged `prepare / confirm / inspect` interface with a USD price ceiling, idempotent confirms and a local ledger | `agentcard/` |
 | Chat front door | Photon Spectrum bot + buyer agent: text a request, approve with a passkey, follow the order | `chat/` |
 | Buyer reference | A Web3CardanoV2-capable Masumi node and a script that hires the live agent and pays its escrow | `masumi/infra/masumi-v2buyer/`, `masumi/scripts/v2_hire.py` |
+| Operator page | `/ops` on the runtime: live jobs, events, every rail's health (Agentcard, Masumi escrow service, Sokosumi listing, own node) and a kill switch that takes the real card offline instantly | `masumi/src/cardano_card/ops.py` |
 | Chain evidence | Independent verification of every funding, result and refund transaction through a Preprod node | `masumi/src/cardano_card/chain_evidence.py` |
 | Deck & site | Pitch deck, demo video source and the landing page | `demo/`, `website/` |
 

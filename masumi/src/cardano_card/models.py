@@ -85,7 +85,7 @@ class Success(BaseModel):
 class Failure(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["failed"]
-    reason: Literal["no_cart", "over_budget", "declined", "error", "cancelled"]
+    reason: Literal["no_cart", "over_budget", "declined", "error", "cancelled", "card_disabled"]
 
 
 class Pending(BaseModel):

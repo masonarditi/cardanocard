@@ -26,3 +26,6 @@ data/
 .agentcard_refresh_pending*
 .agentcard_tokens*.tmp
 .purchases*.tmp
+
+# Local browser-preview launch config
+.claude/
