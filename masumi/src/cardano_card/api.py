@@ -30,6 +30,11 @@ class LocalStart(BaseModel):
     scenario: str = "success"
 
 
+def agentcard_dir():
+    """Mason's module directory: AGENTCARD_DIR (hosted image) or ../../agentcard in a source checkout."""
+    return os.getenv("AGENTCARD_DIR") or str(Path(__file__).resolve().parents[3] / "agentcard")
+
+
 def configured_engine():
     mode = os.getenv("CARDANO_CARD_MODE", "local")
     # hosted = Cardano Preprod escrow through Masumi's hosted payment service (no local node).
@@ -66,14 +71,14 @@ def configured_engine():
             escrow = FakeEscrow(store)
         if backend in {"staged_fake", "staged_module"}:
             if backend == "staged_module":
-                sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "agentcard"))
+                sys.path.insert(0, agentcard_dir())
             module = (FakeStagedModule(store, os.getenv("FAKE_SCENARIO", "success")) if backend == "staged_fake"
                       else StagedModule(os.environ["MASON_STAGED_MODULE"]))
             return StagedEngine(store, escrow, module,
                 escrow_lovelace=int(os.getenv("MASUMI_FEE_LOVELACE", "10000000")),
                 payout_address=os.getenv("PAYOUT_ADDRESS", "SIM-payout" if mode == "local" else ""))
         if backend == "mason":
-            sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "agentcard"))
+            sys.path.insert(0, agentcard_dir())
             purchaser = ModulePurchaser("purchase")
         else:
             purchaser = (AgentCardPurchaser(store, ReplayTransport(store, os.getenv("REPLAY_SCENARIO", "success")))

@@ -1,5 +1,6 @@
 """Offline tests for purchase.py (v1 contract): a possible charge must never come back as "failed"."""
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -184,3 +185,14 @@ def test_unfinished_refresh_blocks_another(tmp_path, monkeypatch):
     monkeypatch.setattr(agentcard, "org", lambda *a, **k: pytest.fail("must not spend the refresh token"))
     with pytest.raises(RuntimeError):
         agentcard.user_token()
+
+
+def test_agentcard_home_relocates_files_and_seeds_tokens(tmp_path, monkeypatch):
+    import importlib, subprocess, sys
+    seed = json.dumps({"user_id": "usr_x", "access_token": "a", "refresh_token": "r", "expires_at": 9999999999})
+    env = {**os.environ, "AGENTCARD_HOME": str(tmp_path / "home"), "AGENTCARD_TOKENS_JSON": seed, "AGENTCARD_ENV": ""}
+    code = ("import agentcard, json, os; print(agentcard.TOKENS, oct(os.stat(agentcard.TOKENS).st_mode & 0o777), "
+            "json.loads(agentcard.TOKENS.read_text())['user_id'], agentcard.LOCKFILE.parent == agentcard.TOKENS.parent)")
+    out = subprocess.run([sys.executable, "-c", code], cwd=str(Path(__file__).resolve().parents[1]), env=env,
+                         capture_output=True, text=True, check=True).stdout.split()
+    assert out[0] == str(tmp_path / "home" / ".agentcard_tokens.json") and out[1] == "0o600" and out[2] == "usr_x" and out[3] == "True"

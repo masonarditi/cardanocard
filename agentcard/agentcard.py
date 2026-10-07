@@ -7,11 +7,18 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-HERE = Path(__file__).parent
+# AGENTCARD_HOME (default: this directory) holds .env*, token files, lock/marker and ledgers, so a hosted
+# deployment can keep code read-only and credentials on a writable volume. Code lives here regardless.
+HERE = Path(os.environ.get("AGENTCARD_HOME") or Path(__file__).parent)
+HERE.mkdir(parents=True, exist_ok=True)
 PROD = os.environ.get("AGENTCARD_ENV") == "prod"
-load_dotenv(HERE / (".env.prod" if PROD else ".env"), override=True)
+load_dotenv(HERE / (".env.prod" if PROD else ".env"), override=True)  # env vars already set also work
 BASE = "https://api.agentcard.sh"
 TOKENS = HERE / (".agentcard_tokens.prod.json" if PROD else ".agentcard_tokens.json")
+if not TOKENS.exists() and os.environ.get("AGENTCARD_TOKENS_JSON"):
+    # First boot on a fresh volume: seed the linked-user token file from the environment, then rotate on disk only.
+    _fd = os.open(TOKENS, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.write(_fd, os.environ["AGENTCARD_TOKENS_JSON"].encode()); os.close(_fd)
 _org = {"token": None, "exp": 0}
 
 

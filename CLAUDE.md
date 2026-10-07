@@ -135,8 +135,12 @@ Ezra's fake and replay backends are unchanged. 115 tests pass.
   (the real gum order didn't return that).
 
 ### Agentcard credentials
-`agentcard/.env` + `.agentcard_tokens.json` (sandbox, user `usr_31f5c35616a38795b45ea5ec`) and `.env.prod` +
-`.agentcard_tokens.prod.json` (prod, user `usr_f9fe7033a2dc8fe3896baeb1`). Never committed; currently on Mason's machine.
+`agentcard/.env` + `.agentcard_tokens.json` (sandbox) and `.env.prod` + `.agentcard_tokens.prod.json` (prod). Never
+committed. 2026-10-07 on Ezra's machine: sandbox org creds + a freshly linked sandbox user `usr_3c01d0a5a6658878e2419eae`
+(linked via `/connect/start` + fixed sandbox code 111111; no card needed, confirm returns `sandbox_mode`); prod org
+creds in `.env.prod` (same as `masumi/.env`) but **no prod user token** — that needs Mason's phone code
+(`setup_vault.py --connect <Mason's phone>` with `AGENTCARD_ENV=prod`) and means his machine stops using its copy.
+Mason's machine still holds sandbox user `usr_31f5c356…` and prod user `usr_f9fe7033…` (the real card).
 Refresh tokens are single-use: only ONE machine may use a token file. Hand it over explicitly and stop using
 the old copy. If a refresh fails with `invalid_refresh_token`, re-link with `setup_vault.py --connect <Mason's phone>`
 (sandbox code 111111) and check the user id (prod must stay `usr_f9fe…`, which has the real card).
