@@ -279,13 +279,13 @@ async function handle(space: Space, message: any) {
   if (fresh || greeting) await introduce(space, message.platform);
   const price = text.match(PRICE);
   if (!VERB.test(text) && !price) {
-    if (!greeting) await space.send(`Tell me what you want and your budget, like "Trident gum from Amazon under $5".`);
+    if (!greeting) await space.send(`Tell me what you want and your budget, like "Trident gum from Amazon under $20".`);
     return;
   }
   // Keep only what follows "buy", minus the store (the agent shops Amazon) and trailing punctuation.
   const after = VERB.test(text) ? text.slice(text.search(VERB)).replace(VERB, "") : text;
   const ask = after.replace(PRICE, "").replace(/\s+(?:on|from|at)\s+amazon\b/i, "").replace(/[\s,.;!?]+$/, "").trim();
-  const max = Number(price?.[1] ?? 5);
+  const max = Number(price?.[1] ?? 20);
   await message.react("👍").catch(() => {});
   await space.send(`Looking for ${ask} under $${max}…`);
   const { job_id, fee, quoted } = await buyer("/jobs", { ask: `${ask} from Amazon`, max_usd: max });
