@@ -190,6 +190,9 @@ async def test_fixed_price_agent_omits_requested_funds_and_accepts_registry_pric
     terms = await escrow.create({"wire_input": {}, "caller_id": "a" * 26, "input": {"max_total_usd": "99.00"}})
     assert "RequestedFunds" not in hosted.calls[-1][2]
     assert terms["RequestedFunds"] == [{"unit": "", "amount": "10000000"}]
+    hosted.payment["RequestedFunds"] = [{"unit": "c48cbb3d5e57ed56e276bc45f99ab39abe94e6cd7ac39fb402da47ad0014df10" + "74555344", "amount": "20000000"}]
+    terms = await escrow.create({"wire_input": {}, "caller_id": "c" * 26, "input": {"max_total_usd": "1.00"}})
+    assert terms["RequestedFunds"][0]["amount"] == "20000000" and terms["RequestedFunds"][0]["unit"].startswith("c48cbb")  # stablecoin unit accepted
     hosted.payment["RequestedFunds"] = [{"unit": "", "amount": "10000000"}, {"unit": "abc", "amount": "1"}]
     with pytest.raises(ValueError, match="Fixed-price"):
         await escrow.create({"wire_input": {}, "caller_id": "b" * 26, "input": {"max_total_usd": "1.00"}})

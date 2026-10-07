@@ -162,8 +162,10 @@ class HostedMasumiEscrow(MasumiEscrow):
         funds = self.funds(data.get('RequestedFunds'))
         if lovelace is not None and funds != [{'unit': '', 'amount': lovelace}]:
             raise ValueError('Hosted service changed the requested escrow amount')
-        if lovelace is None and (len(funds) != 1 or funds[0]['unit'] != '' or int(funds[0]['amount']) > self.MAX_LOVELACE):
-            raise ValueError('Fixed-price agent must resolve to a single ADA amount of at most 100 test ADA')
+        # Fixed price comes from the registry: a single asset (ADA, or a stablecoin such as tUSDM on Preprod).
+        if lovelace is None and (len(funds) != 1 or int(funds[0]['amount']) > self.MAX_LOVELACE or
+                                 (funds[0]['unit'] and not re.fullmatch('[0-9a-f]{56,}', funds[0]['unit']))):
+            raise ValueError('Fixed-price agent must resolve to a single ADA/token amount of at most 100 units')
         result.update(agentIdentifier=self.agent_identifier, sellerVKey=self.seller_vkey, inputHash=expected,
                       RequestedFunds=funds, smartContractAddress=route['smartContractAddress'],
                       payoutAddress=self.payout_address, paymentSourceType=SOURCE_TYPE, rail='hosted-v2',
