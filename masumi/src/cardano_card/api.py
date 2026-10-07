@@ -1,5 +1,7 @@
 import asyncio
 import hashlib
+import time
+import json
 import hmac
 import os
 import sys
@@ -227,6 +229,10 @@ def create_app(engine=None, token=None, background=True, poll_seconds=2, fronten
                     "simulated_purchase": job["simulated_purchase"]}
         if job["payment"] and (not isinstance(service(), StagedEngine) or job["phase"] == "awaiting_payment"):
             response.update(job["payment"])
+            # Sokosumi's paid-job schema (packages/masumi start_job.schema.ts) reads snake_case input_hash and,
+            # for V2, the supportedPaymentSourceIndex to pick the priced source; keep our camelCase too.
+            response["input_hash"] = job["payment"].get("inputHash")
+            response.setdefault("supportedPaymentSourceIndex", job["payment"].get("supportedPaymentSourceIndex", 0))
         else:
             # Return the reserved job ID so a caller can reconcile instead of paying twice.
             from fastapi.responses import JSONResponse
@@ -249,6 +255,38 @@ def create_app(engine=None, token=None, background=True, poll_seconds=2, fronten
             raise Conflict("Cannot change a purchase that has started")
         service().store.put("demo_scenarios", job["id"], {"scenario": body.scenario})
         return {"id": job["id"], "phase": job["phase"]}
+
+    @app.get("/diagnostics", dependencies=[Depends(authorized)])
+    async def diagnostics(probe: bool = Query(default=False)):
+        """Operator view: which rails are wired and (with ?probe=true) whether they answer. Read-only."""
+        engine_ = service()
+        out = {"escrow_rail": ("hosted-v2" if isinstance(engine_.escrow, HostedMasumiEscrow) else
+                               "self-hosted-v1" if isinstance(engine_.escrow, MasumiEscrow) else "simulated"),
+               "purchase_backend": "external" if not engine_.purchaser.simulated else "simulated",
+               "agentcard_env": os.getenv("AGENTCARD_ENV") or "sandbox", "jobs": len(engine_.store.jobs())}
+        module = getattr(engine_.purchaser, "module", None)
+        if module is not None:
+            ac = sys.modules.get("agentcard")
+            if ac is not None:
+                try:
+                    tokens = json.loads(ac.TOKENS.read_text()) if ac.TOKENS.exists() else {}
+                    out["agentcard"] = {"user_id": tokens.get("user_id"), "token_file": str(ac.TOKENS),
+                                        "access_expires_in_s": int(tokens.get("expires_at", 0) - time.time()) if tokens else None}
+                except Exception as exc:  # never leak token contents
+                    out["agentcard"] = {"error": type(exc).__name__}
+        if probe:
+            try:
+                if isinstance(engine_.escrow, MasumiEscrow):
+                    out["escrow_probe"] = await engine_.escrow.validate_payout()
+                ac = sys.modules.get("agentcard")
+                if module is not None and ac is not None:
+                    import requests
+                    r = await asyncio.to_thread(lambda: requests.get(ac.BASE + "/buy/merchants", timeout=30,
+                                                                     headers={"Authorization": f"Bearer {ac.user_token()}"}))
+                    out["agentcard_probe"] = {"status": r.status_code, "merchants": len((r.json() or {}).get("merchants", []))}
+            except Exception as exc:
+                out["probe_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        return out
 
     @app.get("/evidence", dependencies=[Depends(authorized)])
     async def evidence(job_id: str = Query()):

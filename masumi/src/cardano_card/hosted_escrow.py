@@ -152,7 +152,8 @@ class HostedMasumiEscrow(MasumiEscrow):
             raise ValueError('Fixed-price agent must resolve to a single ADA amount of at most 100 test ADA')
         result.update(agentIdentifier=self.agent_identifier, sellerVKey=self.seller_vkey, inputHash=expected,
                       RequestedFunds=funds, smartContractAddress=route['smartContractAddress'],
-                      payoutAddress=self.payout_address, paymentSourceType=SOURCE_TYPE, rail='hosted-v2')
+                      payoutAddress=self.payout_address, paymentSourceType=SOURCE_TYPE, rail='hosted-v2',
+                      supportedPaymentSourceIndex=self.source_index)
         return result
 
     async def observe(self, job):

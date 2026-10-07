@@ -1,4 +1,5 @@
 import httpx
+import pytest
 
 from cardano_card.api import create_app
 from cardano_card.engine import Engine
@@ -207,3 +208,43 @@ async def test_path_prefix_serves_the_same_app(tmp_path):
                 assert (await client.get("/v2jobs")).status_code == 404  # no partial-prefix matches
     finally:
         store.close()
+
+
+async def test_start_job_response_matches_sokosumi_paid_schema(tmp_path):
+    from cardano_card.api import create_app
+    from cardano_card.engine import Engine
+    from cardano_card.providers import FakeEscrow, FakePurchaser
+    from cardano_card.store import Store
+    store = Store(str(tmp_path / "jobs.db"))
+    app = create_app(engine=Engine(store, FakeEscrow(store), FakePurchaser(store)), token="t" * 32, background=False, frontend=False, public_jobs=True)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            async with app.router.lifespan_context(app):
+                payload = {"identifier_from_purchaser": "d" * 26, "input_data": {
+                    "ask": "Buy a sample", "max_total_usd": "10.00", "street": "1 St", "city": "X", "state": "CA",
+                    "zip": "00000", "phone": "+12025550123", "name": "Demo"}}
+                d = (await client.post("/start_job", json=payload)).json()
+                # Sokosumi (packages/masumi/src/schemas/agent/start_job.schema.ts) requires these names/types
+                for key in ("id", "input_hash", "identifierFromPurchaser", "blockchainIdentifier", "payByTime",
+                            "submitResultTime", "unlockTime", "externalDisputeUnlockTime", "agentIdentifier", "sellerVKey"):
+                    assert d.get(key) not in (None, ""), key
+                assert all(isinstance(d[k], int) for k in ("payByTime", "submitResultTime", "unlockTime", "externalDisputeUnlockTime"))
+                assert d["input_hash"] == d["inputHash"] and 0 <= d["supportedPaymentSourceIndex"] <= 24
+                diag = await client.get("/diagnostics", headers={"Authorization": "Bearer " + "t" * 32})
+                assert diag.status_code == 200 and diag.json()["jobs"] == 1
+                assert (await client.get("/diagnostics")).status_code == 401
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("ident,ok", [("a" * 14, True), ("b" * 26, True), ("c" * 13, False), ("d" * 27, False), ("G" * 20, False)])
+def test_purchaser_identifier_accepts_masumi_hex_nonce_range(ident, ok):
+    from pydantic import ValidationError
+    from cardano_card.models import StartRequest
+    data = {"identifier_from_purchaser": ident, "input_data": {"ask": "x", "max_total_usd": "1.00", "street": "1 St",
+            "city": "X", "state": "CA", "zip": "00000", "phone": "+12025550123", "name": "Demo"}}
+    if ok:
+        StartRequest.model_validate(data)
+    else:
+        with pytest.raises(ValidationError):
+            StartRequest.model_validate(data)
