@@ -88,7 +88,9 @@ async def seller_status(job_id):
 async def hire(body: Ask):
     if V3:
         request = {"identifier_from_purchaser": secrets.token_hex(13), "input_data": {
-            "ask": f"{EMPTY_CART} {body.ask}. Pick the cheapest matching listing.", "max_total_usd": body.max_usd, **ADDRESS}}
+            # Agentcard only sees the ask, so the budget goes in it too; max_total_usd is just purchase()'s final check.
+            "ask": f"{EMPTY_CART} {body.ask}, under ${body.max_usd:g} total. Pick the cheapest single item that fits the budget.",
+            "max_total_usd": body.max_usd, **ADDRESS}}
         response = await seller.post("/start_job", json=request)
         response.raise_for_status()
         terms = response.json()
