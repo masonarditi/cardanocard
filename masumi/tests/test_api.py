@@ -248,3 +248,25 @@ def test_purchaser_identifier_accepts_masumi_hex_nonce_range(ident, ok):
     else:
         with pytest.raises(ValidationError):
             StartRequest.model_validate(data)
+
+
+async def test_operator_job_route_is_gated_and_returns_the_stored_job(tmp_path):
+    from cardano_card.api import create_app
+    from cardano_card.engine import Engine
+    from cardano_card.providers import FakeEscrow, FakePurchaser
+    from cardano_card.store import Store
+    store = Store(str(tmp_path / "jobs.db"))
+    app = create_app(engine=Engine(store, FakeEscrow(store), FakePurchaser(store)), token="t" * 32, background=False, frontend=False, public_jobs=True)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            async with app.router.lifespan_context(app):
+                payload = {"identifier_from_purchaser": "e" * 26, "input_data": {
+                    "ask": "Buy a sample", "max_total_usd": "10.00", "street": "1 St", "city": "X", "state": "CA",
+                    "zip": "00000", "phone": "+12025550123", "name": "Demo"}}
+                job_id = (await client.post("/start_job", json=payload)).json()["id"]
+                assert (await client.get(f"/operator/jobs/{job_id}")).status_code == 401
+                full = (await client.get(f"/operator/jobs/{job_id}", headers={"Authorization": "Bearer " + "t" * 32})).json()
+                assert full["id"] == job_id and "payment" in full and "wire_input" in full
+                assert (await client.get("/operator/jobs/nope", headers={"Authorization": "Bearer " + "t" * 32})).status_code == 404
+    finally:
+        store.close()

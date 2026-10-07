@@ -63,7 +63,8 @@ def configured_engine():
                                         os.getenv("AGENT_IDENTIFIER", ""), os.getenv("SELLER_VKEY", ""),
                                         os.getenv("PAYOUT_ADDRESS", ""), os.getenv("MASUMI_FEE_LOVELACE", "10000000"),
                                         os.getenv("MASUMI_PAYMENT_SOURCE_INDEX", "0"),
-                                        lovelace_per_usd=os.getenv("MASUMI_LOVELACE_PER_USD") or None)
+                                        lovelace_per_usd=os.getenv("MASUMI_LOVELACE_PER_USD") or None,
+                                        deadlines_min=[x for x in os.getenv("MASUMI_DEADLINES_MIN", "").split(",") if x.strip()] or None)
         elif mode == "preprod":
             if os.getenv("MASUMI_V1_COMPATIBLE") != "true":
                 raise ValueError("Validate the selected Payment Service against the pinned V1 SDK before Preprod use")
@@ -287,6 +288,11 @@ def create_app(engine=None, token=None, background=True, poll_seconds=2, fronten
             except Exception as exc:
                 out["probe_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         return out
+
+    @app.get("/operator/jobs/{job_id}", dependencies=[Depends(authorized)])
+    async def operator_job(job_id: str):
+        """Full stored job for operator tooling (hosted_evidence verifies its settlement independently)."""
+        return service().get(job_id)
 
     @app.get("/evidence", dependencies=[Depends(authorized)])
     async def evidence(job_id: str = Query()):

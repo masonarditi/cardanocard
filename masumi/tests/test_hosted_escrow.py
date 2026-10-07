@@ -18,7 +18,7 @@ def adapter():
     result.input_hash, result.output_hash = lambda *_: "input-hash", lambda *_: "output-hash"
     result.url, result.api_key, result.agent_identifier, result.seller_vkey = HOSTED_URL, "mas_test", AGENT, SELLER
     result.payout_address, result.fee_lovelace, result.contract, result.source_index = PAYOUT, "10000000", None, 0
-    result.lovelace_per_usd, result.fixed_price = None, False
+    result.lovelace_per_usd, result.fixed_price, result.deadlines_min = None, False, HostedMasumiEscrow.DEFAULT_DEADLINES_MIN
     return result
 
 
@@ -198,3 +198,16 @@ async def test_fixed_price_agent_omits_requested_funds_and_accepts_registry_pric
 def test_constructor_accepts_fixed_mode():
     e = HostedMasumiEscrow(HOSTED_URL, "mas_x", AGENT, SELLER, PAYOUT, "10000000", lovelace_per_usd="fixed")
     assert e.fixed_price is True and e.lovelace_per_usd is None
+
+
+def test_hosted_deadlines_default_and_validation():
+    e = HostedMasumiEscrow(HOSTED_URL, "mas_x", AGENT, SELLER, PAYOUT, "10000000")
+    assert e.deadlines_min == (12, 30, 45, 60)
+    from datetime import datetime, timezone
+    d = e.deadlines(datetime(2026, 10, 7, 0, 0, tzinfo=timezone.utc))
+    assert d["payByTime"] == "2026-10-07T00:12:00.000Z" and d["externalDisputeUnlockTime"] == "2026-10-07T01:00:00.000Z"
+    e2 = HostedMasumiEscrow(HOSTED_URL, "mas_x", AGENT, SELLER, PAYOUT, "10000000", deadlines_min=["5", "20", "36", "52"])
+    assert e2.deadlines_min == (5, 20, 36, 52)
+    for bad in (["12", "16", "45", "60"], ["12", "30", "40", "60"], ["12", "30", "45", "55"], ["1", "2", "3"]):
+        with pytest.raises(ValueError):
+            HostedMasumiEscrow(HOSTED_URL, "mas_x", AGENT, SELLER, PAYOUT, "10000000", deadlines_min=bad)
