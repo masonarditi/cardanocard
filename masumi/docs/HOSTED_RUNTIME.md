@@ -92,6 +92,15 @@ Receipt: `work/hosted-registration-fixed-submission.json`. It reached `Registrat
 signs with `79e95441…` (`addr_test1qpu7j4zp…`, funded 10 tADA by Masumi), so `SELLER_VKEY` changed with the agent.
 Cardano fixed pricing in the SaaS payload takes `{asset: "", amount: "<lovelace>"}` with no `decimals`.
 
+## Third registration: tUSDM pricing (what Sokosumi actually bills)
+
+Sokosumi's billable units on Preprod are **tUSDM** (`16a55b2a…0014df10745553444d`), not ADA — an ADA-priced Fixed agent
+is never "billable" and stays hidden. Registered 2026-10-07 ~14:35 SGT: **CardanoCard**, SaaS agent
+`f59af5fc-66e7-47ff-8c7d-569aba1251f1`, URL `…/v3`, Fixed **20 tUSDM**, confirmed within 5 minutes
+(identifier `67ab0c92…36cbc1000000`, selling wallet `37d35cc9…`). Railway serves this one now; `/v3/start_job` returns
+`RequestedFunds [{unit: <tUSDM>, amount: "20000000"}]`. The ADA (`/v2`) and Dynamic (root) entries remain registered
+but unused. SaaS payload: `pricing.prices[{amount:"20", currency:"tUSDM"}]`, source `fixed[{asset:<unit>, amount:"20000000"}]`.
+
 ## Who can buy
 
 The hosted SaaS key is **seller-only** (`/pay/api/v1/purchase` and `/wallet` return 404), our local node (0.22) is
