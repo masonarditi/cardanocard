@@ -63,8 +63,10 @@ unit (ADA/tUSDM); for V2 agents Sokosumi's own node must also report a purchase-
 never listed**, so `67ab0c92…` cannot be hired on Sokosumi. On 2026-10-07 a second SaaS agent was registered:
 **"Cardano Card"** `4e0531b8-e453-40d7-ae03-ad52ade78924`, Fixed **20 ADA**, `apiUrl …/v2` (the same deployment via
 `CARDANO_CARD_PATH_PREFIXES=/v2`; the SaaS matches registrations to their NFT by exact URL, so the URL had to differ).
-Receipt: `work/hosted-registration-fixed-submission.json`. When it reaches `RegistrationConfirmed`, switch Railway to
-`AGENT_IDENTIFIER=<its identifier>`, `MASUMI_LOVELACE_PER_USD=fixed`, `MASUMI_FEE_LOVELACE=20000000` and redeploy.
+Receipt: `work/hosted-registration-fixed-submission.json`. It reached `RegistrationConfirmed` ~20 min after submission
+(identifier `67ab0c92…d06e8c000000`). **Railway now serves this agent** (`AGENT_IDENTIFIER`, `MASUMI_LOVELACE_PER_USD=fixed`,
+`MASUMI_FEE_LOVELACE=20000000`): every job locks exactly 20 tADA. Each SaaS agent gets its own selling wallet — this one
+signs with `79e95441…` (`addr_test1qpu7j4zp…`, funded 10 tADA by Masumi), so `SELLER_VKEY` changed with the agent.
 Cardano fixed pricing in the SaaS payload takes `{asset: "", amount: "<lovelace>"}` with no `decimals`.
 
 ## Who can buy
