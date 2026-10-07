@@ -18,7 +18,7 @@ def adapter():
     result.input_hash, result.output_hash = lambda *_: "input-hash", lambda *_: "output-hash"
     result.url, result.api_key, result.agent_identifier, result.seller_vkey = HOSTED_URL, "mas_test", AGENT, SELLER
     result.payout_address, result.fee_lovelace, result.contract, result.source_index = PAYOUT, "10000000", None, 0
-    result.lovelace_per_usd = None
+    result.lovelace_per_usd, result.fixed_price = None, False
     return result
 
 
@@ -181,3 +181,20 @@ async def test_service_cannot_change_the_dynamic_amount(hosted):
     hosted.payment["RequestedFunds"] = [{"unit": "", "amount": "10000000"}]  # service echoes a different amount
     with pytest.raises(ValueError, match="escrow amount"):
         await escrow.create({"wire_input": {}, "caller_id": "a" * 26, "input": {"max_total_usd": "20.00"}})
+
+
+async def test_fixed_price_agent_omits_requested_funds_and_accepts_registry_price(hosted):
+    escrow = adapter()
+    escrow.fixed_price = True
+    hosted.payment["RequestedFunds"] = [{"unit": "", "amount": "10000000"}]
+    terms = await escrow.create({"wire_input": {}, "caller_id": "a" * 26, "input": {"max_total_usd": "99.00"}})
+    assert "RequestedFunds" not in hosted.calls[-1][2]
+    assert terms["RequestedFunds"] == [{"unit": "", "amount": "10000000"}]
+    hosted.payment["RequestedFunds"] = [{"unit": "", "amount": "10000000"}, {"unit": "abc", "amount": "1"}]
+    with pytest.raises(ValueError, match="Fixed-price"):
+        await escrow.create({"wire_input": {}, "caller_id": "b" * 26, "input": {"max_total_usd": "1.00"}})
+
+
+def test_constructor_accepts_fixed_mode():
+    e = HostedMasumiEscrow(HOSTED_URL, "mas_x", AGENT, SELLER, PAYOUT, "10000000", lovelace_per_usd="fixed")
+    assert e.fixed_price is True and e.lovelace_per_usd is None

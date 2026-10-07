@@ -46,9 +46,16 @@ class HostedMasumiEscrow(MasumiEscrow):
         self.source_index, self.contract = int(source_index), None
         # Dynamic pricing: escrow per job = the buyer's USD budget at a fixed demo rate, so the payout reimburses the
         # card that fronted the purchase. fee_lovelace is the floor (and the amount when no rate is configured).
-        if lovelace_per_usd is not None and (not str(lovelace_per_usd).isdigit() or int(lovelace_per_usd) <= 0):
-            raise ValueError('MASUMI_LOVELACE_PER_USD must be a positive integer')
-        self.lovelace_per_usd = int(lovelace_per_usd) if lovelace_per_usd is not None else None
+        if lovelace_per_usd is not None and str(lovelace_per_usd).lower() != 'fixed' and (
+                not str(lovelace_per_usd).isdigit() or int(lovelace_per_usd) <= 0):
+            raise ValueError('MASUMI_LOVELACE_PER_USD must be a positive integer or "fixed"')
+        self.lovelace_per_usd = (int(lovelace_per_usd) if lovelace_per_usd is not None and str(lovelace_per_usd).isdigit()
+                                 else None)
+        # Fixed-price agents (what Sokosumi can bill): the registry carries the price, so the request must not send
+        # RequestedFunds; we accept the service's amount if it is a single positive ADA amount.
+        self.fixed_price = str(lovelace_per_usd).lower() == 'fixed' if lovelace_per_usd is not None else False
+        if self.fixed_price:
+            self.lovelace_per_usd = None
 
     def client(self):
         # No redirects: a credential-bearing redirect off the fixed host must fail, never follow.
@@ -121,13 +128,14 @@ class HostedMasumiEscrow(MasumiEscrow):
     async def create(self, job):
         route = await self.validate_payout()
         expected = self.input_hash(job['wire_input'], job['caller_id'])
-        lovelace = self.escrow_lovelace(job)
-        data = await self.post('payment', {
-            'network': 'Preprod', 'paymentSourceType': SOURCE_TYPE, 'agentIdentifier': self.agent_identifier,
-            'identifierFromPurchaser': job['caller_id'], 'inputHash': expected,
-            'supportedPaymentSourceIndex': self.source_index,
-            'RequestedFunds': [{'unit': '', 'amount': lovelace}],
-            'sellerReturnAddress': self.payout_address, **self.deadlines(datetime.now(timezone.utc))})
+        lovelace = None if self.fixed_price else self.escrow_lovelace(job)
+        payload = {'network': 'Preprod', 'paymentSourceType': SOURCE_TYPE, 'agentIdentifier': self.agent_identifier,
+                   'identifierFromPurchaser': job['caller_id'], 'inputHash': expected,
+                   'supportedPaymentSourceIndex': self.source_index,
+                   'sellerReturnAddress': self.payout_address, **self.deadlines(datetime.now(timezone.utc))}
+        if lovelace is not None:
+            payload['RequestedFunds'] = [{'unit': '', 'amount': lovelace}]
+        data = await self.post('payment', payload)
         if not self._identity_ok(data, expected, route['smartContractAddress']):
             raise ValueError('Payment response identity does not match')
         result = {key: data[key] for key in ('blockchainIdentifier', 'payByTime', 'submitResultTime', 'unlockTime',
@@ -138,8 +146,10 @@ class HostedMasumiEscrow(MasumiEscrow):
         if not result['payByTime'] < result['submitResultTime'] <= result['unlockTime'] <= result['externalDisputeUnlockTime']:
             raise ValueError('Unexpected escrow deadline ordering')
         funds = self.funds(data.get('RequestedFunds'))
-        if funds != [{'unit': '', 'amount': lovelace}]:
+        if lovelace is not None and funds != [{'unit': '', 'amount': lovelace}]:
             raise ValueError('Hosted service changed the requested escrow amount')
+        if lovelace is None and (len(funds) != 1 or funds[0]['unit'] != '' or int(funds[0]['amount']) > self.MAX_LOVELACE):
+            raise ValueError('Fixed-price agent must resolve to a single ADA amount of at most 100 test ADA')
         result.update(agentIdentifier=self.agent_identifier, sellerVKey=self.seller_vkey, inputHash=expected,
                       RequestedFunds=funds, smartContractAddress=route['smartContractAddress'],
                       payoutAddress=self.payout_address, paymentSourceType=SOURCE_TYPE, rail='hosted-v2')
