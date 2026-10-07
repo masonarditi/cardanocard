@@ -168,7 +168,7 @@ payment creation (node minimums), refunds in minutes.
 ### What's left (Masumi side)
 1. ~~Fund the Preprod wallets~~ done (Ezra's node, 2026-10-06).
 2. ~~Register on Preprod~~ done: "Cardano Card Preprod" `cmuwcob4i001dry7mj91qzkcn`, loopback URL. Public exposure is
-   still only the jobs-disabled Railway endpoint (`hosted_api.py`); see `masumi/docs/HOSTED_REGISTRATION.md`.
+   is now the real Railway runtime (`masumi/docs/HOSTED_RUNTIME.md`); the old jobs-disabled endpoint was removed.
 3. ~~Escrow → payout and escrow → refund on Preprod with simulated purchasing~~ **PASSED 2026-10-06, independently
    verified via Blockfrost** (`cardano_card.acceptance --case payout|refund`):
    - payout job `e1ff3dd2…`: fund `6490cc0e…4f901f8` → result `a8512d96…dd80f36d` → payout `59debcb2…33381de0`
@@ -191,6 +191,11 @@ payment creation (node minimums), refunds in minutes.
   (`…8589cf963cabcd`, `…/v4`, Fixed 20 tUSDM), minted from **our own payment node on Railway** (`cardanocard-node`,
   0.22.0 + cost-model patch) with the funded seller wallet `62f4…`. Runtime: `CARDANO_CARD_MODE=preprod`,
   `PAYMENT_SERVICE_URL=<node public https>/api/v1`, `MASUMI_ALLOW_REMOTE_NODE=true`. See `masumi/docs/HOSTED_RUNTIME.md`.
+- **E2E proven 2026-10-07 on the listed V2 CardanoCard (`/v3`) with the real card**, bought from our own 0.29 buyer
+  node (`masumi/infra/masumi-v2buyer`, `masumi/scripts/v2_hire.py`; the SaaS key is seller-only and 0.22 can't pay
+  V2): refund leg job `c88ceef6…` (`over_budget`, refund withdrawn `a35888c0…`) and payout leg job `991d47ac…`
+  (Amazon order `8fd31445…`, $1.32, result `238d65b6…`). Hashes/blocks in `masumi/BUILD_STATUS.md`.
+  Gotcha: v1 `purchase()` never empties Agentcard's cart — a failed job's items come back; say so in the ask.
 - Chain evidence: NOWNodes Preprod (`NOWNODES_API_KEY` in `masumi/infra/masumi/.env`, default when set) or Blockfrost
   (`BLOCKFROST_API_KEY_PREPROD`); `CHAIN_PROVIDER` forces one. Verifier requires `genesis.network_magic == 1`.
 - Docs: https://www.masumi.network/dev/masumi/core-concepts/payments and .../refunds-and-disputes
