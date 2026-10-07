@@ -12,7 +12,13 @@ Since 2026-10-07 the public Railway service runs the **real** agent, not the reg
   This is what the hosted service puts on every payment and what `/start_job` returns as `sellerVKey`; the registry
   record's `SmartContractWallet` (`ebef83fc…`) is a different wallet and must not be configured as the seller.
 - Payout (`sellerReturnAddress`): `addr_test1qpgq4gf9fmzg3gkdnp9jdtujtscr2qdms07tmtp8aqz5ykc7uvlelkeuqsgctx9n4en6xmkf4qhqkumzcc3qwt4845hqsxwadj`
-- Purchasing: `PURCHASE_BACKEND=fake` (simulated success) until Mason's Agentcard credentials are placed on Railway.
+- Purchasing: `PURCHASE_BACKEND=mason` → `agentcard/purchase.py` in **sandbox** (since 2026-10-07 ~10:55 SGT): a real
+  Amazon cart is built, the confirm is declined with `sandbox_mode`, the buyer is refunded. Sandbox org credentials and
+  a linked sandbox user (`usr_3c01d0a5…`) live only in Railway variables + `/data/agentcard` (`AGENTCARD_HOME`); the
+  local copy is parked as `agentcard/.agentcard_tokens.handed-off.json` and must not be used while Railway holds it.
+  Switching to the real card = `AGENTCARD_ENV=prod` + prod org creds + a prod user token (Mason's phone code).
+- Escrow per job = `max_total_usd` × `MASUMI_LOVELACE_PER_USD` (1 tADA per USD), floor `MASUMI_FEE_LOVELACE` (2 tADA),
+  cap 100 tADA — so the payout reimburses the card that fronted the purchase.
 
 ## What is verified live (2026-10-07)
 

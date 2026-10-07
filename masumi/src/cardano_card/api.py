@@ -195,8 +195,12 @@ def create_app(engine=None, token=None, background=True, poll_seconds=2, fronten
                 "network": "Preprod" if isinstance(service().escrow, (MasumiEscrow, HostedMasumiEscrow)) else "simulated",
                 "escrow_rail": ("hosted-v2" if isinstance(service().escrow, HostedMasumiEscrow) else
                                 "self-hosted-v1" if isinstance(service().escrow, MasumiEscrow) else "simulated"),
-                "message": ("Cardano Card on Preprod: fund the escrow returned by /start_job, then poll /status. "
-                            "Merchant purchasing is simulated until the card backend is enabled."
+                "message": (("Cardano Card on Preprod: fund the escrow returned by /start_job, then poll /status. " +
+                             ("Merchant purchasing is simulated (no card)." if service().purchaser.simulated else
+                              "Purchases go through Agentcard on a real card; a failed purchase refunds your escrow."
+                              if os.getenv("AGENTCARD_ENV") == "prod" else
+                              "Purchases go through the Agentcard sandbox: a real cart is built, the checkout is declined "
+                              "(sandbox_mode) and your escrow is refunded."))
                             if not service().purchaser.simulated or isinstance(service().escrow, HostedMasumiEscrow)
                             else "Local scaffold; registry and on-chain acceptance not yet verified")}
 
