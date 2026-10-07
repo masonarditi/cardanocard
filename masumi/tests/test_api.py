@@ -186,3 +186,24 @@ async def test_masumi_verification_endpoint_returns_hmac_of_challenge(tmp_path, 
                 assert r.text == hmac.new(b"s3cret", b"abc-123", hashlib.sha256).hexdigest()
     finally:
         store.close()
+
+
+async def test_path_prefix_serves_the_same_app(tmp_path):
+    from cardano_card.api import PathPrefixes, create_app
+    from cardano_card.engine import Engine
+    from cardano_card.providers import FakeEscrow, FakePurchaser
+    from cardano_card.store import Store
+    store = Store(str(tmp_path / "jobs.db"))
+    inner = create_app(engine=Engine(store, FakeEscrow(store), FakePurchaser(store)), token="t" * 32, background=False, frontend=False)
+    app = PathPrefixes(inner, ["/v2"])
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            async with inner.router.lifespan_context(inner):
+                plain = (await client.get("/availability")).json()
+                prefixed = (await client.get("/v2/availability")).json()
+                assert plain == prefixed and prefixed["status"] == "available"
+                assert (await client.get("/v2/input_schema")).status_code == 200
+                assert (await client.get("/v2")).status_code in (200, 404)  # bare prefix maps to "/"
+                assert (await client.get("/v2jobs")).status_code == 404  # no partial-prefix matches
+    finally:
+        store.close()

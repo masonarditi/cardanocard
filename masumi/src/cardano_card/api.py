@@ -276,12 +276,32 @@ def create_app(engine=None, token=None, background=True, poll_seconds=2, fronten
     return app
 
 
+class PathPrefixes:
+    """Serve the same app under extra base paths (e.g. /v2) so several registry entries can point at one deployment
+    with distinct apiBaseUrl values; the Masumi SaaS matches registrations to their NFT by exact URL."""
+    def __init__(self, app, prefixes):
+        self.app = app
+        self.prefixes = tuple(p.rstrip("/") for p in prefixes if p.strip("/"))
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in {"http", "websocket"}:
+            path = scope.get("path", "")
+            for prefix in self.prefixes:
+                if path == prefix or path.startswith(prefix + "/"):
+                    scope = {**scope, "path": path[len(prefix):] or "/", "raw_path": (path[len(prefix):] or "/").encode()}
+                    break
+        await self.app(scope, receive, send)
+
+
 def main():
     load_dotenv()
     import uvicorn
     app = create_app(poll_seconds=float(os.getenv("CARDANO_CARD_POLL_SECONDS", "2")),
                      frontend=os.getenv("CARDANO_CARD_FRONTEND", "false").lower() == "true",
                      live_output=os.getenv("CARDANO_CARD_LIVE_OUTPUT", "true").lower() == "true")
+    prefixes = [p for p in os.getenv("CARDANO_CARD_PATH_PREFIXES", "").split(",") if p.strip()]
+    if prefixes:
+        app = PathPrefixes(app, prefixes)
     # Single process. Loopback by default; the hosted deployment sets CARDANO_CARD_HOST=0.0.0.0 behind Railway's proxy.
     uvicorn.run(app, host=os.getenv("CARDANO_CARD_HOST", "127.0.0.1"),
                 port=int(os.getenv("PORT") or os.getenv("CARDANO_CARD_PORT", "8080")), access_log=False)
