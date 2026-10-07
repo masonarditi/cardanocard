@@ -65,6 +65,11 @@ def test_prepare_never_spends(api):
     assert v2.inspect_purchase(job_id="job_1") == q
 
 
+def test_lone_item_from_another_search_is_quoted(api):
+    q = prepare(api, response=(200, {**QUOTED[1], "catalog": {"items": [{"id": "B0OTHER"}]}}))
+    assert q["status"] == "prepared"
+
+
 def test_confirmed_needs_settled_order_not_just_an_order_id(api):
     q = prepare(api)
     api.buys.append(PLACED)

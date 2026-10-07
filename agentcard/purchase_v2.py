@@ -113,7 +113,10 @@ def _quote(rec, cart, allowed):
         "currency": currency, "subtotal_cents": total, "estimated_total_cents": total if estimate is None else estimate,
         "ceiling_cents": total if ceiling is None else ceiling, "total_is_estimate": cart.get("totalIsEstimate"),
         "budget_cents": rec["budget_cents"], "expires_at": int(time.time()) + QUOTE_TTL_S}
-    if not cart.get("items") or any(i.get("product_id") not in allowed for i in cart["items"]):
+    # The turn's catalog lists one search only, so a lone item may come from another search; the buyer approves it by name.
+    items = cart.get("items") or []
+    if not items or any(not i.get("product_id") for i in items) or (
+            len(items) > 1 and any(i["product_id"] not in allowed for i in items)):
         return "unexpected_items"
     amounts = [a for a in (total, estimate, ceiling) if a is not None]
     if (total is None or any(type(a) is not int or a < 0 for a in amounts)
