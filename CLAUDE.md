@@ -172,6 +172,10 @@ payment creation (node minimums), refunds in minutes.
    `masumi/docs/PREPROD_ACCEPTANCE.md`). Blocked only on Agentcard credentials: Ezra's machine has none, and
    `masumi/.env`'s client credentials are **production** (`sandbox: false`), so they must not be used for the sandbox
    case. Needs Mason's sandbox `.env` + token file handed over exclusively, or Mason runs it on his machine.
+- Hosted runtime (2026-10-07): Railway runs the real agent for the published hosted agent `67ab0c92…` via Masumi's
+  hosted payment service (V2 rail, `CARDANO_CARD_MODE=hosted`, public MIP-003 routes). Seller wallet is `d5e0d3b0…`
+  (what the hosted service signs with), not the registry's `ebef83fc…`. Simulated purchasing until Agentcard
+  credentials live on Railway. See `masumi/docs/HOSTED_RUNTIME.md`.
 - Chain evidence: NOWNodes Preprod (`NOWNODES_API_KEY` in `masumi/infra/masumi/.env`, default when set) or Blockfrost
   (`BLOCKFROST_API_KEY_PREPROD`); `CHAIN_PROVIDER` forces one. Verifier requires `genesis.network_magic == 1`.
 - Docs: https://www.masumi.network/dev/masumi/core-concepts/payments and .../refunds-and-disputes

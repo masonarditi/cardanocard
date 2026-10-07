@@ -1,6 +1,14 @@
 # Integration build status — 6 October 2026
 
-## Hosted registration deployment
+## Hosted runtime live on Preprod (7 October 2026)
+
+The Railway service now runs the real agent against Masumi's **hosted** payment service (Web3CardanoV2, no local node):
+`POST /start_job` on https://cardanocard-preprod-production.up.railway.app creates a real Preprod escrow request and
+returns MIP-003 terms; `/status` polls it; operator routes stay token-gated. Purchasing is simulated until Mason's
+Agentcard credentials are placed on Railway. Buyer side still needs Sokosumi Preprod or a ≥0.28 payment service
+(the SaaS key cannot purchase; our local node is V1-only). Details: [HOSTED_RUNTIME.md](docs/HOSTED_RUNTIME.md).
+
+## Hosted registration deployment (historical)
 
 Railway deployment `031ec0b3-874f-41ef-bca0-c363995476e8` succeeded in eztramble's Projects. Public health and schema are verified at https://cardanocard-preprod-production.up.railway.app. This endpoint explicitly disables jobs; it has no payment/card credentials or connection to the private local runtime. Masumi accepted hosted Preprod agent `544fcfcd-29e5-4453-9a04-ac6554956d56` under ezzycoin. Both SaaS and registry remain RegistrationRequested, with no transaction, agent identifier or processing timestamp. Canonical registry pricing is correctly Dynamic; only the SaaS copy displays Free. The completion API's funding message is generic, although independent Blockfrost checks found no history for either hosted registration wallet. Do not fund or recreate the registration blindly. The read-only readiness CLI verifies identity/payout/source/pricing and distinguishes registration from execution readiness. **341 tests pass.** See [hosted registration](docs/HOSTED_REGISTRATION.md), the [V2 implementation checklist](docs/HOSTED_V2_PLAN.md), and the [unsent support note](docs/MASUMI_REGISTRATION_SUPPORT.md).
 
