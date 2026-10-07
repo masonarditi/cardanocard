@@ -31,8 +31,9 @@ const VERB = /^(?:(?:can you|could you|please)\s+)?(?:buy|get|order|grab)\s+(?:m
 const PRICE = /\s+(?:under|below|for under|for less than|less than|max|up to)\s+\$?(\d+(?:\.\d{1,2})?)\s*[.!?]*$/i;
 
 type Quote = { merchant: string; items: { name: string }[]; subtotal_cents: number; authorization_ceiling_cents: number };
-type Job = { id: string; space: Space; platform: string; token: string; max: number; quote?: Quote; stage: Stage | "quote";
-  tx?: string; tada: number; approved?: boolean; challenge?: string; card?: any };
+type Order = { name: string; cents: number; id: string };
+type Job = { id: string; space: Space; platform: string; token: string; ask: string; max: number; fee: string; quoted: boolean;
+  quote?: Quote; order?: Order; stage: Stage | "quote"; tx?: string; approved?: boolean; challenge?: string; card?: any };
 type Key = { id: string; publicKey: string; counter: number };
 const jobs = new Map<string, Job>();
 const load = async <T>(path: string, empty: T): Promise<T> => (await Bun.file(path).exists()) ? Bun.file(path).json() : empty;
@@ -42,18 +43,23 @@ const AVATAR = await avatar();
 const usd = (cents = 0) => `$${(cents / 100).toFixed(2)}`;
 
 // Amazon titles run long: the headline is the part before the first comma or "with", the rest is detail.
-function title(q?: Quote) {
-  const full = q?.items[0]?.name ?? "your order";
+function title(full: string) {
   const cut = full.search(/,|\swith\s|\s[-–]\s/i);
   const [head, detail] = cut > 0 ? [full.slice(0, cut).trim(), full.slice(cut).replace(/^[,\s–-]+/, "")] : [full, ""];
   return { head: head.length > 46 ? head.slice(0, head.lastIndexOf(" ", 44)) + "…" : head, detail };
 }
 
+const name = (job: Job) => job.order?.name ?? job.quote?.items[0]?.name ?? job.ask.charAt(0).toUpperCase() + job.ask.slice(1);
+
+// Before a quote or order exists (the deployed agent buys without quoting), the card shows the budget instead.
 const view = (job: Job, stage = job.stage as Stage) => {
-  const { head, detail } = title(job.quote);
-  return { stage, item: head, detail, merchant: job.quote?.merchant ?? "Amazon", price: usd(job.quote?.subtotal_cents),
-    ceiling: usd(job.quote?.authorization_ceiling_cents), escrow: `${job.tada} tADA`, tx: job.tx,
-    og: `${PUBLIC}/og/${job.token}?s=${stage}` };
+  const { head, detail } = title(name(job));
+  const upTo = !job.order && !job.quote;
+  const hold: [string, string] = job.order ? ["Amazon order", `${job.order.id.slice(0, 8)}…`]
+    : job.quote ? ["Card hold, at most", usd(job.quote.authorization_ceiling_cents)] : ["Item budget", `up to $${job.max}`];
+  return { stage, item: head, detail, merchant: job.quote?.merchant ?? "Amazon", upTo, hold, escrow: job.fee, tx: job.tx,
+    price: job.order ? usd(job.order.cents) : job.quote ? usd(job.quote.subtotal_cents) : `$${job.max}`,
+    og: `${PUBLIC}/og/${job.token}?s=${stage}${job.order ? "o" : ""}` };
 };
 
 const buyer = async (path: string, body?: object): Promise<any> => {
@@ -96,9 +102,15 @@ async function follow(job: Job) {
       typed = Date.now();
       await job.space.startTyping().catch(() => {});
     }
+    if (!job.quoted) await once("quote", async () => {
+      await job.space.send(markdown(`I can get **${job.ask}** on Amazon for up to **$${job.max}**.\n\n` +
+        `To buy it, I'll hold **${job.fee}** in escrow on Cardano. If the order doesn't go through, you get it all back.`));
+      job.stage = "approve";
+      await job.space.send(richlink(`${PUBLIC}/a/${job.token}`));
+    });
     if (p === "awaiting_quote_approval" && !done.has("quote")) {
       job.quote = v.quote;
-      const { head } = title(v.quote), price = usd(v.quote.subtotal_cents);
+      const { head } = title(name(job)), price = usd(v.quote.subtotal_cents);
       await job.space.stopTyping().catch(() => {});
       if (v.quote.subtotal_cents > job.max * 100) {
         await job.space.send(markdown(`The closest I found is **${head}** at **${price}**, which is over your $${job.max} limit, so I didn't buy anything.`));
@@ -106,7 +118,7 @@ async function follow(job: Job) {
       }
       await once("quote", async () => {
         await job.space.send(markdown(`Found **${head}** for **${price}** on ${v.quote.merchant}.\n\n` +
-          `To buy it, I'll hold **${job.tada} tADA** in escrow on Cardano. If the order doesn't go through, you get it all back.`));
+          `To buy it, I'll hold **${job.fee}** in escrow on Cardano. If the order doesn't go through, you get it all back.`));
         // A plain link opens Safari, where passkeys (Face ID) work; the in-Messages card is used for status after approval.
         job.stage = "approve";
         await job.space.send(richlink(`${PUBLIC}/a/${job.token}`));
@@ -116,24 +128,30 @@ async function follow(job: Job) {
       job.tx = v.lock_txs[0];
       await once("locked", async () => {
         await showCard(job, "locked");
-        await job.space.send(`Locked in escrow on Cardano. Placing your order with ${job.quote?.merchant ?? "Amazon"} now.`);
+        await job.space.send(`Locked in escrow on Cardano. Buying it on ${job.quote?.merchant ?? "Amazon"} now.`);
       });
     }
     if (p === "purchasing") await once("checkout", () => showCard(job, "checkout"));
-    if (["submitting_result", "result_submitted", "paid"].includes(p) && v.purchase?.order_id) {
+    if (v?.purchase?.order_id) {
+      const items = v.purchase.items ?? [];
+      job.order = { name: items[0]?.name ?? name(job), id: String(v.purchase.order_id),
+        cents: Math.round(Number(v.purchase.total_usd ?? (job.quote?.subtotal_cents ?? 0) / 100) * 100) };
       await showCard(job, "ordered");
-      await job.space.send(effect(markdown(`Ordered 🎉 **${title(job.quote).head}** is on its way to ${CITY}.`), imessage.effect.message.confetti));
+      await job.space.send(effect(markdown(`Ordered 🎉 **${title(job.order.name).head}** for **${usd(job.order.cents)}** is on its way to ${CITY}.`),
+        imessage.effect.message.confetti));
       return;
     }
     if (p === "refund_due" || p === "refunded") await once("declined", async () => {
       await showCard(job, "refunding");
-      await job.space.send(SANDBOX && v.purchase?.reason === "declined"
-        ? `${job.quote?.merchant ?? "Amazon"} didn't accept the card. This is Agentcard's sandbox card, so no real order was placed and nothing was charged. Your ${job.tada} tADA is on its way back.`
-        : `The order didn't go through and nothing was charged. Your ${job.tada} tADA is on its way back.`);
+      const reason = v.purchase?.reason;
+      await job.space.send((reason === "over_budget" ? `Nothing on Amazon matched under $${job.max}, so I didn't buy anything.`
+        : reason === "no_cart" ? "I couldn't find a clear match, so I didn't buy anything."
+        : SANDBOX && reason === "declined" && job.quoted ? "Amazon didn't accept the card. This is Agentcard's sandbox card, so no real order was placed."
+        : "The order didn't go through.") + ` Nothing was charged, and your ${job.fee} is on its way back.`);
     });
     if (p === "refunded") {
       await showCard(job, "refunded");
-      await job.space.send(`Your ${job.tada} tADA is back in your wallet ✓`);
+      await job.space.send(`Your ${job.fee} is back in your wallet ✓`);
       return;
     }
     if (p === "quote_rejected") {
@@ -141,8 +159,9 @@ async function follow(job: Job) {
       await job.space.send(`I couldn't find a good match for that under $${job.max}. Try adding the brand, or "from Amazon".`);
       return;
     }
-    if (["quote_expired", "manual_review", "payment_creation_unknown", "expired"].includes(p)) {
-      await job.space.send("Something went wrong on my end, so I stopped before buying anything. Nothing was charged.");
+    if (["quote_expired", "manual_review", "payment_creation_unknown", "expired"].includes(p) || v?.pay_error) {
+      await job.space.send(!job.approved && p.endsWith("expired") ? "The approval window closed, so I didn't buy anything."
+        : "Something went wrong on my end, so I stopped before buying anything. Nothing was charged.");
       return;
     }
     await Bun.sleep(3000);
@@ -152,7 +171,7 @@ async function follow(job: Job) {
 async function approve(job: Job) {
   await buyer(`/jobs/${job.id}/approve`, {});
   job.approved = true;
-  await job.space.send(`Approved ✓ Locking your ${job.tada} tADA in escrow…`);
+  await job.space.send(`Approved ✓ Locking your ${job.fee} in escrow…`);
   await showCard(job, "approved");
 }
 
@@ -253,10 +272,9 @@ async function handle(space: Space, message: any) {
   const ask = text.replace(PRICE, "").replace(VERB, "").trim(), max = Number(price?.[1] ?? 20);
   await message.react("👍").catch(() => {});
   await space.send(`Looking for ${ask} under $${max}…`);
-  // The budget must cover the card's authorization ceiling (~$11 over the item price), so the price cap goes in the ask.
-  const { job_id } = await buyer("/jobs", { ask: `${ask} under $${max}`, max_total_usd: max + 12 });
+  const { job_id, fee, quoted } = await buyer("/jobs", { ask, max_usd: max });
   const job: Job = { id: job_id, space, platform: message.platform, token: crypto.randomUUID().replaceAll("-", ""),
-    stage: "quote", max, tada: 10 };
+    stage: "quote", ask, max, fee, quoted };
   jobs.set(job_id, job);
   follow(job).catch((e) => console.log(`follow ${job_id} stopped: ${e.message}`));
 }

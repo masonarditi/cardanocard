@@ -40,7 +40,7 @@ const badge: Record<Stage, [string, string]> = {
   checkout: ["Checking out", T.text], ordered: ["Ordered", T.ok], refunding: ["Refunding", T.muted], refunded: ["Refunded", T.ok],
 };
 
-export type CardView = { stage: Stage; item: string; merchant: string; price: string; escrow: string; tx?: string };
+export type CardView = { stage: Stage; item: string; merchant: string; price: string; upTo?: boolean; escrow: string; tx?: string };
 
 export function statusCard(v: CardView) {
   const refund = v.stage === "refunding" || v.stage === "refunded";
@@ -59,7 +59,9 @@ export function statusCard(v: CardView) {
         h({ flexDirection: "column", flex: 1 },
           h({ fontSize: 26, color: T.muted, fontWeight: 500 }, v.merchant),
           h({ fontSize: 58, fontWeight: 600, letterSpacing: -2.4, lineHeight: 1.08, marginTop: 10 }, v.item)),
-        h({ fontSize: 96, fontWeight: 600, letterSpacing: -4.5, lineHeight: 1 }, v.price)),
+        h({ flexDirection: "column", alignItems: "flex-end" },
+          v.upTo ? h({ fontSize: 26, fontWeight: 500, color: T.muted, marginBottom: 8 }, "up to") : null,
+          h({ fontSize: 96, fontWeight: 600, letterSpacing: -4.5, lineHeight: 1 }, v.price))),
       h({ marginTop: "auto", flexDirection: "column", gap: 22 },
         h({ alignItems: "center" }, ...steps.flatMap((name, i) => {
           const done = i < at[v.stage], now = i === at[v.stage];

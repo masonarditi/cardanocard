@@ -2,7 +2,7 @@
 import type { Stage } from "./cards";
 
 export type PageView = {
-  stage: Stage; item: string; detail: string; merchant: string; price: string; ceiling: string; escrow: string;
+  stage: Stage; item: string; detail: string; merchant: string; price: string; upTo: boolean; hold: [string, string]; escrow: string;
   og: string; tx?: string;
 };
 
@@ -21,7 +21,7 @@ export function page(v: PageView) {
     const cls = i < at[v.stage] ? (i === 3 && refund ? "skip" : "done") : i === at[v.stage] ? "now" : "";
     return `<li class="${cls}"><i></i><span>${name}</span></li>`;
   }).join("");
-  const title = v.stage === "approve" ? `Approve ${v.price} · ${v.item}` : `${headline[v.stage]} · ${v.item}`;
+  const title = v.stage === "approve" ? `Approve ${v.upTo ? "up to " : ""}${v.price} · ${v.item}` : `${headline[v.stage]} · ${v.item}`;
   const action = v.stage === "approve"
     ? `<button id="go">${FACE_ID}<span>Approve with Face ID</span></button>
        <p class="fine">Your passkey approves it on this device. The ${esc(v.escrow)} stays in Masumi escrow until the order goes through, and comes back if it doesn't.</p>`
@@ -54,7 +54,7 @@ h1{margin-top:8px;font-size:30px;line-height:1.08;font-weight:600;letter-spacing
 .card{margin-top:24px;background:var(--panel);border:1px solid var(--line);border-radius:22px;padding:22px;box-shadow:0 24px 60px rgba(0,0,0,.06)}
 .top{display:flex;justify-content:space-between;align-items:baseline}
 .chip{font-size:13px;font-weight:500;padding:5px 11px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
-.price{font-size:48px;font-weight:600;letter-spacing:-2.2px;line-height:1}
+.price{font-size:48px;font-weight:600;letter-spacing:-2.2px;line-height:1}.price small{display:block;font-size:14px;font-weight:500;letter-spacing:0;color:var(--muted);margin-bottom:6px}
 .rows{margin-top:18px;border-top:1px solid var(--line)}
 .rows div{display:flex;justify-content:space-between;padding:13px 0;border-bottom:1px solid var(--line);font-size:15px}
 .rows div:last-child{border-bottom:0;padding-bottom:0}
@@ -89,8 +89,8 @@ footer img{height:15px;opacity:.85}
 <h1 class="rise" style="animation-delay:.1s">${esc(v.item)}</h1>
 ${v.detail ? `<p class="detail rise" style="animation-delay:.14s">${esc(v.detail)}</p>` : ""}
 <section class="card rise" style="animation-delay:.18s">
-  <div class="top"><span class="price">${v.price}</span><span class="chip">${esc(v.merchant)}</span></div>
-  <dl class="rows"><div><dt>Card hold, at most</dt><dd>${v.ceiling}</dd></div>
+  <div class="top"><span class="price">${v.upTo ? "<small>up to</small>" : ""}${v.price}</span><span class="chip">${esc(v.merchant)}</span></div>
+  <dl class="rows"><div><dt>${esc(v.hold[0])}</dt><dd>${esc(v.hold[1])}</dd></div>
   <div><dt>Escrow</dt><dd>${esc(v.escrow)} · Cardano</dd></div><div><dt>If it fails</dt><dd>Full refund</dd></div></dl>
 </section>
 <ol class="rise" style="animation-delay:.24s;--p:${Math.min(at[v.stage], 4) / 4}">${steps}</ol>

@@ -1,9 +1,14 @@
-"""Buyer agent behind the chat front door: hires Cardano Card over MIP-003 and pays its escrow from Mason's
-Preprod buyer wallet, reusing masumi's PreprodBuyer (idempotent funding and refund requests)."""
+"""Buyer agent behind the chat front door: hires Cardano Card over MIP-003 and pays its escrow from Mason's Preprod
+buyer wallet. Two sellers:
+- local (default): Mason's own Cardano Card in staged mode (quote first), paid in tADA through the 0.22 node with
+  masumi's PreprodBuyer (idempotent funding and refund requests).
+- V3_AGENT_URL set: the deployed, Sokosumi-listed CardanoCard (/v3, real card), paid 20 tUSDM through the 0.29 V2
+  buyer node on :3002, reusing masumi/scripts/v2_hire.py's term checks and payment payload."""
 import asyncio
 import json
 import os
 import secrets
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -20,33 +25,44 @@ from cardano_card.store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
 S = dotenv_values(ROOT / "masumi/.env.preprod")
-SELLER = os.getenv("CARDANO_CARD_URL", "http://127.0.0.1:8787")
+V3 = os.getenv("V3_AGENT_URL", "").rstrip("/")
+SELLER = V3 or os.getenv("CARDANO_CARD_URL", "http://127.0.0.1:8787")
 ADDRESS = json.loads(os.environ["DELIVERY_ADDRESS"])
 FINAL = {"paid", "refunded", "result_submitted", "manual_review", "quote_rejected", "quote_expired",
          "payment_creation_unknown", "expired"}
+# v1 purchase() on /v3 never empties Agentcard's single Amazon cart, so the ask says so (Ezra's 2026-10-07 lesson).
+EMPTY_CART = "Start from an empty cart and buy only this:"
 
 store = Store(str(ROOT / "chat/data/buyer.db"))
-node = httpx.AsyncClient(base_url=loopback_url(S["BUYER_PAYMENT_SERVICE_URL"]) + "/",
-                         headers={"token": S["BUYER_PAYMENT_API_KEY"]}, timeout=30)
-seller = httpx.AsyncClient(base_url=SELLER, timeout=30)
-routes = NodeRoutes(node)
-buyer = PreprodBuyer(store, node, S["AGENT_IDENTIFIER"], S["SELLER_VKEY"], create_masumi_input_hash,
-                     digest({"buyer": S["BUYER_PAYMENT_SERVICE_URL"], "vkey": S["BUYER_VKEY"]}),
-                     expected_funds=[{"unit": "", "amount": S["MASUMI_FEE_LOVELACE"]}])
+seller = httpx.AsyncClient(base_url=SELLER, timeout=120)
+if V3:
+    sys.path.insert(0, str(ROOT / "masumi/scripts"))
+    import v2_hire as v2
+    v2node = httpx.AsyncClient(base_url=v2.NODE + "/", timeout=60,
+                               headers={"token": dotenv_values(ROOT / "masumi/infra/masumi/.env")["ADMIN_KEY"]})
+    FEE = "20 tUSDM"
+else:
+    node = httpx.AsyncClient(base_url=loopback_url(S["BUYER_PAYMENT_SERVICE_URL"]) + "/",
+                             headers={"token": S["BUYER_PAYMENT_API_KEY"]}, timeout=30)
+    routes = NodeRoutes(node)
+    buyer = PreprodBuyer(store, node, S["AGENT_IDENTIFIER"], S["SELLER_VKEY"], create_masumi_input_hash,
+                         digest({"buyer": S["BUYER_PAYMENT_SERVICE_URL"], "vkey": S["BUYER_VKEY"]}),
+                         expected_funds=[{"unit": "", "amount": S["MASUMI_FEE_LOVELACE"]}])
+    FEE = f"{int(S['MASUMI_FEE_LOVELACE']) / 1e6:g} tADA"
 
 
 class Ask(BaseModel):
     ask: str
-    max_total_usd: float
+    max_usd: float
 
 
 async def run():
     while True:
         for (job_id,) in store.db.execute("SELECT key FROM records WHERE namespace='chat_jobs'").fetchall():
             saved = store.get("chat_jobs", job_id)
-            if saved["approved"] and not saved.get("done"):
+            if saved["approved"] and not saved.get("done") and bool(saved.get("v3")) == bool(V3):
                 try:
-                    await advance(job_id, saved)
+                    await (advance_v3 if saved.get("v3") else advance)(job_id, saved)
                 except Exception as exc:
                     print(f"WAIT | {job_id} | {type(exc).__name__}: {str(exc)[:160]}", flush=True)
         await asyncio.sleep(5)
@@ -70,13 +86,26 @@ async def seller_status(job_id):
 
 @app.post("/jobs")
 async def hire(body: Ask):
-    request = StartRequest(identifier_from_purchaser=secrets.token_hex(13),
-                           input_data={"ask": body.ask, "max_total_usd": body.max_total_usd, "address": ADDRESS})
+    if V3:
+        request = {"identifier_from_purchaser": secrets.token_hex(13), "input_data": {
+            "ask": f"{EMPTY_CART} {body.ask}. Pick the cheapest matching listing.", "max_total_usd": body.max_usd, **ADDRESS}}
+        response = await seller.post("/start_job", json=request)
+        response.raise_for_status()
+        terms = response.json()
+        try:
+            payload = v2.purchase_payload(terms, request, v2.check_terms(terms, request))
+        except SystemExit as exc:
+            raise HTTPException(409, f"Refusing the agent's terms: {exc}") from None
+        store.put("chat_jobs", terms["id"], {"request": request, "payload": payload, "approved": False, "v3": True})
+        return {"job_id": terms["id"], "fee": FEE, "quoted": False}
+    # The staged budget must cover the card's authorization ceiling (~$11 over the item price); the cap is in the ask.
+    request = StartRequest(identifier_from_purchaser=secrets.token_hex(13), input_data={
+        "ask": f"{body.ask} under ${body.max_usd:g}", "max_total_usd": body.max_usd + 12, "address": ADDRESS})
     response = await seller.post("/start_job", json=request.model_dump(mode="json"))
     response.raise_for_status()
     job_id = response.json()["id"]
     store.put("chat_jobs", job_id, {"request": request.model_dump(mode="json"), "approved": False})
-    return {"job_id": job_id}
+    return {"job_id": job_id, "fee": FEE, "quoted": True}
 
 
 @app.get("/jobs/{job_id}")
@@ -84,16 +113,26 @@ async def view(job_id: str):
     saved = store.get("chat_jobs", job_id) or {}
     status = await seller_status(job_id)
     return {"phase": status["phase"], "escrow_state": status["escrow_state"], "quote": status.get("quote"),
-            "purchase": status.get("purchase"), "result": status.get("result"),
-            "fee_lovelace": int(S["MASUMI_FEE_LOVELACE"]), "lock_txs": saved.get("lock_txs", []),
+            "purchase": status.get("purchase"), "result": status.get("result"), "fee": FEE,
+            "lock_txs": saved.get("lock_txs", []), "pay_error": saved.get("pay_error"),
             "fund": store.get("buyer_writes", "fund:" + job_id), "refund": store.get("buyer_writes", "refund:" + job_id)}
 
 
 @app.post("/jobs/{job_id}/approve")
 async def approve(job_id: str):
     saved = store.get("chat_jobs", job_id)
+    if not saved or saved["approved"]:
+        raise HTTPException(409, "Nothing waiting for approval")
+    if saved.get("v3"):
+        # Checkpoint first: an escrow payment is never sent twice, even after a timeout.
+        store.put("chat_jobs", job_id, {**saved, "approved": True})
+        response = await v2node.post("purchase/", json=saved["payload"])
+        if response.status_code >= 400:
+            store.put("chat_jobs", job_id, {**saved, "approved": True, "pay_error": response.text[:300]})
+            raise HTTPException(502, "The buyer node refused the escrow payment")
+        return {"approved": True}
     status = await seller_status(job_id)
-    if not saved or status["phase"] != "awaiting_quote_approval":
+    if status["phase"] != "awaiting_quote_approval":
         raise HTTPException(409, "No quote waiting for approval")
     response = await seller.post("/provide_input", json={"job_id": job_id, "input_schema_hash": status["input_schema_hash"],
                                                           "input_data": {"approved": True}})
@@ -115,4 +154,23 @@ async def advance(job_id, saved):
     if status["phase"] == "refund_due":
         await buyer.refund(job_id, status)
     saved["done"] = status["phase"] in FINAL
+    store.put("chat_jobs", job_id, saved)
+
+
+async def advance_v3(job_id, saved):
+    status = await seller_status(job_id)
+    identifier = saved["payload"]["blockchainIdentifier"]
+    response = await v2node.get("purchase/", params={"network": "Preprod", "limit": 25, "includeHistory": "true",
+                                                     "filterPaymentSourceType": "Web3CardanoV2"})
+    response.raise_for_status()
+    data = response.json().get("data", {})
+    purchase = next((p for p in data.get("Purchases") or [] if p.get("blockchainIdentifier") == identifier), {})
+    lock = (purchase.get("CurrentTransaction") or {}).get("txHash")
+    if lock and not saved.get("lock_txs") and purchase.get("onChainState") == "FundsLocked":
+        saved["lock_txs"] = [lock]
+    if status["phase"] == "refund_due" and (status.get("purchase") or {}).get("status") == "failed" and not saved.get("refund_requested"):
+        saved["refund_requested"] = True
+        store.put("chat_jobs", job_id, saved)
+        (await v2node.post("purchase/request-refund", json={"network": "Preprod", "blockchainIdentifier": identifier})).raise_for_status()
+    saved["done"] = status["phase"] in FINAL and status["phase"] != "result_submitted"
     store.put("chat_jobs", job_id, saved)
