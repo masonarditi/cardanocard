@@ -71,6 +71,11 @@ Since 2026-10-07 the public Railway service runs the **real** agent, not the reg
   (`ops/card`), so it survives restarts and needs no redeploy. While OFF, `GuardedPurchaser` answers every purchase
   with `{"status": "failed", "reason": "card_disabled"}` before any Agentcard call — the engine treats it like any
   definitive no-purchase and refunds the buyer. A checkout already in flight is not interrupted. Default is ON.
+- **Resolve a stuck purchase:** `POST /ops/jobs/{id}/resolve {"note": "…"}` (or the row button) for a job in
+  `reconciling` / `manual_review` — e.g. Agentcard answered `status: error, charge_status: unknown` and never settles
+  (job `590a9736…`, 2026-10-07 19:19 SGT). Check the card for an authorization first; the action marks the purchase a
+  definitive failure (`cancelled`), moves the job to `refund_due`, and the buyer's refund request is then authorized.
+  It never calls the provider.
 - `GET /diagnostics` (bearer token; `?probe=true` also calls the hosted payment source and Agentcard) — shows the wired
   rails, the Agentcard user on the volume and whether its token refreshes. Verified on Railway: `agentcard_probe 200`.
 - `GET /operator/jobs/{job_id}` (bearer token) — the full stored job.

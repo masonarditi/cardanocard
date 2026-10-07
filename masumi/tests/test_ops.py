@@ -86,3 +86,30 @@ async def test_ops_routes_are_token_gated_and_toggle_the_switch(tmp_path):
             assert status["ops_log"][0]["message"] == "Card switched OFF — judges in the room"
     finally:
         store.close()
+
+
+async def test_operator_can_resolve_a_pending_purchase_as_no_charge(tmp_path):
+    store = Store(str(tmp_path / "resolve.db"))
+    engine = Engine(store, FakeEscrow(store), GuardedPurchaser(FakePurchaser(store, "unknown"), store))
+    try:
+        app = create_app(engine, TOKEN, background=False)
+        async with app.router.lifespan_context(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            client.headers["Authorization"] = "Bearer " + TOKEN
+            job = await funded(engine)
+            await engine.tick()
+            assert engine.get(job["id"])["phase"] == "reconciling"
+            assert (await client.post(f"/ops/jobs/{job['id']}/resolve", json={"note": "x"})).status_code == 422
+            resolved = (await client.post(f"/ops/jobs/{job['id']}/resolve", json={"note": "card shows no charge"})).json()
+            assert resolved["phase"] == "refund_due" and resolved["purchase"] == {"status": "failed", "reason": "cancelled"}
+            assert (await client.post(f"/ops/jobs/{job['id']}/resolve", json={"note": "again"})).status_code == 409
+            assert (await client.post("/ops/jobs/missing/resolve", json={"note": "nope"})).status_code == 404
+            await engine.tick()
+            assert engine.get(job["id"])["phase"] == "refund_due"
+            status = (await client.get("/ops/status", params={"probe": "false"})).json()
+            assert status["ops_log"][0]["message"].startswith(f"Job {job['id'][:8]} resolved as no charge")
+            await engine.simulate(job["id"], "request_refund")
+            await engine.tick()
+            await engine.tick()
+            assert engine.get(job["id"])["phase"] == "refunded"
+    finally:
+        store.close()

@@ -47,8 +47,16 @@ function render(s) {
   $("jobs").querySelector("tbody").innerHTML = s.jobs.map((j) => {
     const p = j.purchase;
     const purchase = !p ? "—" : p.status === "success" ? `<span class="ok">order ${esc(p.order_id?.slice(0, 8))} · $${esc(p.total_usd)}</span>` : `<span class="${p.status === "failed" ? "warn" : ""}">${esc(p.status)}${p.reason ? " · " + esc(p.reason) : ""}</span>`;
-    return `<tr><td><code>${esc(j.id.slice(0, 8))}</code>${j.simulated ? ' <span class="badge">sim</span>' : ""}</td><td>${badge(j.phase)}</td><td>${esc(j.escrow_state)}</td><td>${purchase}</td><td>${esc((j.ask || "").slice(0, 60))} <span class="muted">$${esc(j.budget_usd)}</span></td><td title="${esc(j.last_message)}">${t(j.updated)}</td></tr>`;
+    const resolve = ["reconciling", "manual_review"].includes(j.phase) ? `<br><button class="danger resolve" data-job="${esc(j.id)}">Resolve: no charge → refund</button>` : "";
+    return `<tr><td><code>${esc(j.id.slice(0, 8))}</code>${j.simulated ? ' <span class="badge">sim</span>' : ""}</td><td>${badge(j.phase)}${resolve}</td><td>${esc(j.escrow_state)}</td><td>${purchase}</td><td>${esc((j.ask || "").slice(0, 60))} <span class="muted">$${esc(j.budget_usd)}</span></td><td title="${esc(j.last_message)}">${t(j.updated)}</td></tr>`;
   }).join("") || '<tr><td colspan="6" class="muted">No jobs yet</td></tr>';
+  document.querySelectorAll("button.resolve").forEach((b) => b.addEventListener("click", async () => {
+    const id = b.dataset.job;
+    if (!confirm(`Resolve job ${id.slice(0, 8)} as NO CHARGE? Only do this after checking the card shows no authorization for it. The buyer's escrow will be refunded.`)) return;
+    const note = prompt("Why (required, goes in the log)", "card shows no charge");
+    if (!note || note.length < 3) return;
+    try { await api(`ops/jobs/${id}/resolve`, {method: "POST", body: JSON.stringify({note})}); await refresh(); } catch (e) { $("error").textContent = e.message; }
+  }));
   $("events").innerHTML = s.events.map((e) => `<li><span class="muted">${t(e.at)}</span><code>${esc(e.job_id.slice(0, 8))}</code><span>${badge(e.phase)} ${esc(e.message)}</span></li>`).join("");
   $("opslog").innerHTML = s.ops_log.map((e) => `<li><span class="muted">${t(e.at)}</span><span></span><span>${esc(e.message)}</span></li>`).join("") || '<li class="muted">No switches yet</li>';
 }

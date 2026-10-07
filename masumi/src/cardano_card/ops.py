@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, Query
+from fastapi import Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -143,9 +143,10 @@ def alerts(rows, card, probes, now):
         out.append({"level": "warn", "text": "Card is OFF: every purchase fails as card_disabled and refunds the buyer"})
     for r in rows:
         if r["phase"] in ATTENTION_PHASES:
-            out.append({"level": "error", "text": f"Job {r['id'][:8]} needs an operator: {r['phase']} — {r['last_message']}"})
+            out.append({"level": "error", "text": f"Job {r['id'][:8]} needs an operator: {r['phase']} — {r['last_message']} (check the card, then Resolve on its row)"})
         elif r["phase"] in OPEN_PHASES and r["updated"] and now - r["updated"] > STUCK_AFTER_S:
-            out.append({"level": "warn", "text": f"Job {r['id'][:8]} has been {r['phase']} for {int((now - r['updated']) / 60)} min"})
+            hint = " — provider never settled; check the card for a charge, then Resolve on its row" if r["phase"] == "reconciling" else ""
+            out.append({"level": "warn", "text": f"Job {r['id'][:8]} has been {r['phase']} for {int((now - r['updated']) / 60)} min{hint}"})
     for name, p in probes.items():
         if p and not p.get("ok"):
             out.append({"level": "error", "text": f"{name} check failed: {p.get('error')}"})
@@ -164,6 +165,28 @@ def alerts(rows, card, probes, now):
 class CardSwitch(BaseModel):
     enabled: bool
     note: str = Field(default="", max_length=200)
+
+
+class Resolution(BaseModel):
+    note: str = Field(min_length=3, max_length=200)
+
+
+RESOLVABLE = {"reconciling", "manual_review"}
+
+
+async def resolve_no_charge(engine, job_id, note):
+    """Operator decision: the provider never settled (e.g. Agentcard `charge_status: unknown`) and the card shows no
+    charge, so treat the purchase as a definitive failure and let the buyer's refund proceed. Never touches the provider."""
+    async with engine.lock:
+        job = engine.get(job_id)
+        if job["phase"] not in RESOLVABLE:
+            raise HTTPException(409, f"Only {sorted(RESOLVABLE)} jobs can be resolved; this one is {job['phase']}")
+        job["outcome"] = {"status": "failed", "reason": "cancelled"}
+        engine.change(job, "refund_due", f"Operator resolved as no charge: {note}")
+    log = engine.store.get("ops", "log") or []
+    log.append({"at": time.time(), "message": f"Job {job_id[:8]} resolved as no charge — {note}"})
+    engine.store.put("ops", "log", log[-50:])
+    return engine.public(job)
 
 
 def register_ops(app, service, authorized, started_at=None):
@@ -213,3 +236,7 @@ def register_ops(app, service, authorized, started_at=None):
     @app.post("/ops/card", dependencies=[Depends(authorized)])
     async def ops_card(body: CardSwitch):
         return set_card(service().store, body.enabled, body.note)
+
+    @app.post("/ops/jobs/{job_id}/resolve", dependencies=[Depends(authorized)])
+    async def ops_resolve(job_id: str, body: Resolution):
+        return await resolve_no_charge(service(), job_id, body.note)
