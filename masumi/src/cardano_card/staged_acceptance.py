@@ -138,8 +138,9 @@ async def run(args):
             if job["phase"] == "awaiting_input":
                 print("STOPPED | vault approval required; approve on the phone, then rerun the same command to inspect",
                       flush=True)
-            from .chain_evidence import BlockfrostEvidence
-            verifier = BlockfrostEvidence(infra["BLOCKFROST_API_KEY_PREPROD"])
+            from .chain_evidence import BlockfrostEvidence, chain_provider
+            provider, credential = chain_provider(infra)
+            verifier = BlockfrostEvidence(credential, provider=provider)
             try:
                 proof = await verifier.verify(job, buyer_vkey=settings["BUYER_VKEY"], seller_vkey=settings["SELLER_VKEY"],
                     buyer_address=settings["BUYER_ADDRESS"], seller_address=settings["SELLER_ADDRESS"],

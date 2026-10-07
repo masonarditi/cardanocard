@@ -23,6 +23,7 @@ from .store import Store
 # Canonical OpenAPI from Masumi payment-service 0.22.0, commit 26c7297821fd.
 SCHEMA_SHA256 = "113b4e5f6e9240b391b7d61ae73326c4d93ea7d96111ee2c5673cf489f82ebe2"
 MIN_WALLET_LOVELACE = 20_000_000
+from .chain_evidence import PROVIDERS, chain_client, chain_credential_ok, chain_provider
 BLOCKFROST_URL = "https://cardano-preprod.blockfrost.io/api/v0/"
 
 
@@ -70,8 +71,8 @@ class PreprodSetup:
         loopback_url(str(node.base_url))
         if str(node.base_url).rstrip("/").split("?")[0].endswith("/api/v1") is False:
             raise ValueError("Expected the local /api/v1 node")
-        if chain is not None and str(chain.base_url) != BLOCKFROST_URL:
-            raise ValueError("Only the Preprod Blockfrost endpoint is allowed")
+        if chain is not None and str(chain.base_url) not in {base for base, _ in PROVIDERS.values()}:
+            raise ValueError("Only the Preprod Blockfrost or NOWNodes endpoint is allowed")
         self.lock = asyncio.Lock()
 
     async def _get(self, route, **kwargs):
@@ -297,13 +298,13 @@ async def run(args):
     if not key:
         raise ValueError("Local node admin configuration is missing")
     node_url = loopback_url(args.node_url) + "/"
-    blockfrost = values.get("BLOCKFROST_API_KEY_PREPROD")
-    if blockfrost and not blockfrost.startswith("preprod"):
-        raise ValueError("A Preprod Blockfrost key is required")
+    provider, blockfrost = chain_provider(values)
+    if blockfrost and not chain_credential_ok(provider, blockfrost):
+        raise ValueError("A Preprod chain-provider key is required")
     store = Store(args.database) if args.execute else None
     try:
         async with httpx.AsyncClient(base_url=node_url, headers={"token": key}, timeout=30) as node, \
-                   httpx.AsyncClient(base_url=BLOCKFROST_URL, headers={"project_id": blockfrost or ""}, timeout=30) as chain:
+                   chain_client(values) as chain:
             setup = PreprodSetup(store, node, chain if blockfrost else None, name=args.agent_name, author=args.author)
             options = {"seller_vkey": args.seller_vkey, "buyer_vkey": args.buyer_vkey}
             if args.action == "inspect":

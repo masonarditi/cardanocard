@@ -124,8 +124,8 @@ async def test_execute_preflight_to_proof_and_resume_without_repeating_writes(
     monkeypatch.setattr(httpx, 'AsyncClient', offline_client)
 
     class FixtureVerifier:
-        def __init__(self, key):
-            assert key == 'preprod-fixture'
+        def __init__(self, key, *, provider='blockfrost'):
+            assert key == 'preprod-fixture' and provider == 'blockfrost'
 
         async def verify(self, job, *, buyer_vkey, seller_vkey, buyer_address, seller_address, payout_address, settlement_policy):
             assert job['phase'] == 'paid'

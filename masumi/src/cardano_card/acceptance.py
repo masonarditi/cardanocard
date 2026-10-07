@@ -19,6 +19,7 @@ import httpx
 from dotenv import dotenv_values
 
 from .agentcard_bridge import AgentCardPurchaser, ReplayTransport
+from .chain_evidence import chain_client, chain_credential_ok, chain_provider
 from .providers import ModulePurchaser
 from .engine import Engine
 from .event_output import event_line, safe
@@ -210,7 +211,9 @@ def configuration(args):
     settings = dict(dotenv_values(args.env))
     infra = dict(dotenv_values(args.node_env))
     missing = [name for name in REQUIRED if not settings.get(name)]
-    missing += [] if infra.get("BLOCKFROST_API_KEY_PREPROD", "").startswith("preprod") else ["BLOCKFROST_API_KEY_PREPROD"]
+    provider, credential = chain_provider(infra)
+    if not chain_credential_ok(provider, credential):
+        missing.append("NOWNODES_API_KEY" if provider == "nownodes" else "BLOCKFROST_API_KEY_PREPROD")
     return settings, infra, missing
 
 
@@ -222,7 +225,7 @@ async def preflight(settings, infra, store):
     if settings.get("NETWORK") != "Preprod" or not 0 < int(settings["MASUMI_FEE_LOVELACE"]) <= 10_000_000:
         raise ValueError("Acceptance is limited to Preprod and at most 10 test ADA per job")
     async with httpx.AsyncClient(base_url=seller_url + "/", headers={"token": infra.get("ADMIN_KEY", "")}, timeout=30) as node, \
-            httpx.AsyncClient(base_url="https://cardano-preprod.blockfrost.io/api/v0/", headers={"project_id": infra["BLOCKFROST_API_KEY_PREPROD"]}, timeout=30) as chain:
+            chain_client(infra) as chain:
         if settings["PAYMENT_API_KEY"] == settings["BUYER_PAYMENT_API_KEY"]:
             raise ValueError("Buyer and seller must use separate capped Preprod keys")
         buyer_credits = None
@@ -321,8 +324,9 @@ async def run(args):
                 if job["phase"] not in STOP_PHASES:
                     await asyncio.sleep(args.poll_seconds)
             job = engine.get(job["id"])
-            from .chain_evidence import BlockfrostEvidence
-            verifier = BlockfrostEvidence(infra["BLOCKFROST_API_KEY_PREPROD"])
+            from .chain_evidence import BlockfrostEvidence  # late import: tests substitute the verifier
+            provider, credential = chain_provider(infra)
+            verifier = BlockfrostEvidence(credential, provider=provider)
             try:
                 proof = await verifier.verify(job, buyer_vkey=settings["BUYER_VKEY"], seller_vkey=settings["SELLER_VKEY"],
                     buyer_address=settings["BUYER_ADDRESS"], seller_address=settings["SELLER_ADDRESS"],

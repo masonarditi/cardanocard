@@ -20,6 +20,8 @@ rejects `authorize-refund` for a non-disputed payment (refunds auto-collect; eng
 strict verifier rejected real wallet change that carried a test token (now requires per-asset conservation instead).
 Both local HTTP flows (fake backend: success → paid, declined → refunded; staged_fake: success, declined, over_budget → quote_rejected) also pass end to end. **382 masumi + 52 agentcard tests pass.**
 
+Chain evidence provider: NOWNodes Cardano Preprod (`ada-testnet.nownodes.io`, Blockfrost-compatible) is integrated as the default when its key is configured, with Blockfrost as fallback. Verified 2026-10-07 against Blockfrost: identical `genesis` (network_magic 1), same tip, and identical tx/utxo/redeemer/datum payloads for all four settlement transactions above; both PASS evidences were re-verified through NOWNodes.
+
 Still unproven: a real Agentcard checkout on Preprod escrow (`mason-sandbox-refund`, `mason-payout`) — needs Mason's credentials; see CLAUDE.md "What's left".
 
 ## Current stage

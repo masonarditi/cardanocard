@@ -172,6 +172,8 @@ payment creation (node minimums), refunds in minutes.
    `masumi/docs/PREPROD_ACCEPTANCE.md`). Blocked only on Agentcard credentials: Ezra's machine has none, and
    `masumi/.env`'s client credentials are **production** (`sandbox: false`), so they must not be used for the sandbox
    case. Needs Mason's sandbox `.env` + token file handed over exclusively, or Mason runs it on his machine.
+- Chain evidence: NOWNodes Preprod (`NOWNODES_API_KEY` in `masumi/infra/masumi/.env`, default when set) or Blockfrost
+  (`BLOCKFROST_API_KEY_PREPROD`); `CHAIN_PROVIDER` forces one. Verifier requires `genesis.network_magic == 1`.
 - Docs: https://www.masumi.network/dev/masumi/core-concepts/payments and .../refunds-and-disputes
 
 ## Rules

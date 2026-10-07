@@ -84,7 +84,7 @@ AGENTCARD_ENV=prod .venv/bin/python -m cardano_card.acceptance --case mason-payo
 
 ## Evidence and completion
 
-Each run saves private evidence in `work/preprod-evidence/JOB_ID.json`. Buyer and seller transaction references are combined, then inspected independently through the fixed Blockfrost Preprod endpoint. The evidence states what was checked and what remains unverified. A node-reported terminal status or a transaction existing on chain alone is insufficient for `PASS`.
+Each run saves private evidence in `work/preprod-evidence/JOB_ID.json`. Buyer and seller transaction references are combined, then inspected independently through a Blockfrost-compatible Preprod API: **NOWNodes** (`https://ada-testnet.nownodes.io`, header `api-key`) when `NOWNODES_API_KEY` is set in `infra/masumi/.env`, otherwise Blockfrost (`BLOCKFROST_API_KEY_PREPROD`); `CHAIN_PROVIDER=blockfrost|nownodes` forces one. Before reading any transaction the verifier fetches `genesis` and requires `network_magic == 1` (Cardano Preprod), so a mainnet or Preview endpoint can never produce a PASS. The evidence records which provider was used (`provider`, `reported_by`). The evidence states what was checked and what remains unverified. A node-reported terminal status or a transaction existing on chain alone is insufficient for `PASS`.
 
 `PASS` requires the intended terminal branch, funding proof, result proof for payout, and matching independent settlement verification. Unsupported transaction shapes, missing evidence or unavailable Blockfrost data remain `INCOMPLETE` with exit code 2. Node completion and proof completion are separate fields. Nothing in an escrow proof establishes a real merchant purchase in the simulated cases.
 

@@ -13,6 +13,33 @@ from datetime import datetime, timezone
 import httpx
 
 PREPROD_URL = 'https://cardano-preprod.blockfrost.io/api/v0/'
+# NOWNodes serves a Blockfrost-compatible Cardano Preprod API at the root path with an `api-key` header.
+# Verified 2026-10-07: genesis network_magic 1, same tip, identical tx/utxo/redeemer/datum payloads as Blockfrost.
+NOWNODES_URL = 'https://ada-testnet.nownodes.io/'
+PREPROD_NETWORK_MAGIC = 1
+PROVIDERS = {'blockfrost': (PREPROD_URL, 'project_id'), 'nownodes': (NOWNODES_URL, 'api-key')}
+
+
+def chain_provider(infra):
+    """(name, credential) from the node env: CHAIN_PROVIDER, else NOWNodes if configured, else Blockfrost."""
+    name = (infra.get('CHAIN_PROVIDER') or ('nownodes' if infra.get('NOWNODES_API_KEY') else 'blockfrost')).lower()
+    if name not in PROVIDERS:
+        raise ValueError('CHAIN_PROVIDER must be blockfrost or nownodes')
+    credential = infra.get('NOWNODES_API_KEY' if name == 'nownodes' else 'BLOCKFROST_API_KEY_PREPROD') or ''
+    if name == 'nownodes' and infra.get('NOWNODES_URL') and infra['NOWNODES_URL'].rstrip('/') + '/' != NOWNODES_URL:
+        raise ValueError('NOWNODES_URL must be the Cardano Preprod (ada-testnet) endpoint')
+    return name, credential
+
+
+def chain_credential_ok(name, credential):
+    return bool(credential) and (name != 'blockfrost' or credential.startswith('preprod'))
+
+
+def chain_client(infra, **kwargs):
+    """httpx.AsyncClient bound to the configured Preprod provider (for setup/preflight reads)."""
+    name, credential = chain_provider(infra)
+    base, header = PROVIDERS[name]
+    return httpx.AsyncClient(base_url=base, headers={header: credential}, timeout=30, **kwargs)
 HEX64 = re.compile(r'[0-9a-f]{64}')
 HEX56 = re.compile(r'[0-9a-f]{56}')
 TIMES = ('payByTime', 'submitResultTime', 'unlockTime', 'externalDisputeUnlockTime')
@@ -203,14 +230,30 @@ class BlockfrostEvidence:
     job's payment fields must already have been checked against the submitted
     request. Returned data deliberately excludes credentials and raw datums.
     """
-    def __init__(self, project_id, *, client=None):
-        if not isinstance(project_id, str) or not project_id.startswith('preprod'):
-            raise ValueError('A Preprod Blockfrost project key is required')
-        self.project_id, self.client = project_id, client
+    def __init__(self, project_id, *, client=None, provider='blockfrost'):
+        if provider not in PROVIDERS:
+            raise ValueError('Unknown chain provider')
+        if not isinstance(project_id, str) or not chain_credential_ok(provider, project_id):
+            raise ValueError('A Preprod Blockfrost project key is required' if provider == 'blockfrost'
+                             else 'A NOWNodes API key is required')
+        self.project_id, self.client, self.provider = project_id, client, provider
+        self.base_url, self.auth_header = PROVIDERS[provider]
+
+    @classmethod
+    def from_env(cls, infra, **kwargs):
+        name, credential = chain_provider(infra)
+        return cls(credential, provider=name, **kwargs)
+
+    async def _require_preprod(self, client):
+        # The provider must be serving Preprod: a Preview or mainnet mirror would never find our transactions,
+        # and a wrong-network "match" must not be able to verify anything.
+        genesis = await self._get(client, 'genesis')
+        if not isinstance(genesis, dict) or genesis.get('network_magic') != PREPROD_NETWORK_MAGIC:
+            raise ValueError('Chain provider is not serving Cardano Preprod')
 
     async def _get(self, client, route):
-        response = await client.get(PREPROD_URL + route,
-                                    headers={'project_id': self.project_id},
+        response = await client.get(self.base_url + route,
+                                    headers={self.auth_header: self.project_id},
                                     follow_redirects=False, timeout=30)
         if response.status_code == 404:
             return None
@@ -249,7 +292,7 @@ class BlockfrostEvidence:
                 raise ValueError('Invalid transaction hash')
             if value not in hashes:
                 hashes.append(value)
-        result = {'network': 'Preprod', 'provider': 'Blockfrost',
+        result = {'network': 'Preprod', 'provider': self.provider,
                   'checked_at': datetime.now(timezone.utc).isoformat(),
                   'proof_scope': 'indexed_contract_datum_and_value_observation',
                   'payout_address': payout_address, 'payout_address_snapshotted': snapshot is not None,
@@ -268,8 +311,9 @@ class BlockfrostEvidence:
 
     async def _verify(self, client, hashes, payment, buyer_vkey, seller_vkey,
                       buyer_address, seller_address, payout_address, expected_result, result, settlement_policy):
+        await self._require_preprod(client)
         for tx_hash in hashes:
-            item = {'tx_hash': tx_hash, 'network': 'Preprod', 'reported_by': 'blockfrost',
+            item = {'tx_hash': tx_hash, 'network': 'Preprod', 'reported_by': self.provider,
                     'verified_on_chain': False, 'contract_matches': [], 'status': 'pending'}
             result['transactions'].append(item)
             try:
