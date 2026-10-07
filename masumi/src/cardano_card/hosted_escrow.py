@@ -32,10 +32,17 @@ class HostedMasumiEscrow(MasumiEscrow):
     DEFAULT_DEADLINES_MIN = (12, 30, 45, 60)
 
     def __init__(self, url, api_key, agent_identifier, seller_vkey, payout_address, fee_lovelace, source_index=0,
-                 lovelace_per_usd=None, deadlines_min=None, source_type=SOURCE_TYPE):
+                 lovelace_per_usd=None, deadlines_min=None, source_type=SOURCE_TYPE, auth_header='x-api-key'):
         parsed = urlparse(url)
-        if url.rstrip('/') + '/' != HOSTED_URL or parsed.scheme != 'https':
-            raise ValueError('The hosted adapter only talks to Masumi\'s hosted Preprod payment service')
+        base = url.rstrip('/') + '/'
+        # Allowed nodes: Masumi's hosted service, or our own payment-service (0.28+ wire format) on Railway's private
+        # network (http://<service>.railway.internal:PORT/api/v1/) — never an arbitrary public host.
+        own_node = parsed.scheme == 'http' and (parsed.hostname or '').endswith('.railway.internal') and base.endswith('/api/v1/')
+        if (base != HOSTED_URL and not own_node) or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError('The hosted adapter only talks to Masumi\'s hosted Preprod payment service or our Railway-internal node')
+        if auth_header not in {'x-api-key', 'token'}:
+            raise ValueError('auth header must be x-api-key (SaaS) or token (payment-service)')
+        self.auth_header = auth_header
         if not all((api_key, agent_identifier, seller_vkey, payout_address)):
             raise ValueError('Hosted escrow requires the SaaS API key, agent identifier, seller key and payout address')
         if not re.fullmatch('[0-9a-f]{56}', seller_vkey):
@@ -45,7 +52,7 @@ class HostedMasumiEscrow(MasumiEscrow):
             raise ValueError('Service fee must be a positive lovelace amount of at most 100 test ADA')
         from masumi.helper_functions import create_masumi_input_hash, create_masumi_output_hash
         self.input_hash, self.output_hash = create_masumi_input_hash, create_masumi_output_hash
-        self.url, self.api_key = HOSTED_URL, api_key
+        self.url, self.api_key = base, api_key
         self.agent_identifier, self.seller_vkey = agent_identifier, seller_vkey
         self.payout_address, self.fee_lovelace = payout_address, str(int(fee_lovelace))
         # Index into the agent's registered supportedPaymentSources (the hosted V2 API requires it).
@@ -78,7 +85,7 @@ class HostedMasumiEscrow(MasumiEscrow):
 
     def client(self):
         # No redirects: a credential-bearing redirect off the fixed host must fail, never follow.
-        return httpx.AsyncClient(base_url=self.url, headers={'x-api-key': self.api_key}, timeout=30,
+        return httpx.AsyncClient(base_url=self.url, headers={self.auth_header: self.api_key}, timeout=30,
                                  follow_redirects=False)
 
     async def post(self, route, payload):

@@ -262,3 +262,16 @@ def test_constructor_rejects_invalid_configured_payout_before_sdk_load(address):
     with pytest.raises(ValueError):
         MasumiEscrow('http://127.0.0.1:3001/api/v1', 'api-key', 'agent-id', SIGNING_KEY,
                      payout_address=address)
+
+
+@pytest.mark.parametrize("url,allow,ok", [("http://127.0.0.1:3001/api/v1", False, True), ("https://node.example.com/api/v1", False, False),
+                                         ("https://node.example.com/api/v1", True, True), ("http://node.example.com/api/v1", True, False)])
+def test_remote_node_requires_explicit_https_opt_in(url, allow, ok, monkeypatch):
+    import sys, types
+    fake = types.ModuleType("masumi.helper_functions"); fake.create_masumi_input_hash = lambda *a: "i"; fake.create_masumi_output_hash = lambda *a: "o"
+    monkeypatch.setitem(sys.modules, "masumi.helper_functions", fake); monkeypatch.setitem(sys.modules, "masumi", types.ModuleType("masumi"))
+    if ok:
+        MasumiEscrow(url, "k", "agent", "seller", allow_remote=allow)
+    else:
+        with pytest.raises(ValueError):
+            MasumiEscrow(url, "k", "agent", "seller", allow_remote=allow)

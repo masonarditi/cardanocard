@@ -19,10 +19,13 @@ class MasumiEscrow:
     automatic_requested_refund = True
     simulated = False
 
-    def __init__(self, url, api_key, agent_identifier, seller_vkey, payout_address=None):
+    def __init__(self, url, api_key, agent_identifier, seller_vkey, payout_address=None, allow_remote=False):
         parsed = urlparse(url)
-        if parsed.scheme != 'http' or parsed.hostname not in {'127.0.0.1', 'localhost'} or parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise ValueError('This Preprod adapter requires a local Payment Service URL')
+        local = parsed.scheme == 'http' and parsed.hostname in {'127.0.0.1', 'localhost'}
+        # allow_remote: the node is reached through a tunnel (hosted runtime -> self-hosted V1 node); HTTPS only.
+        remote_ok = allow_remote and parsed.scheme == 'https' and parsed.hostname
+        if (not local and not remote_ok) or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError('This Preprod adapter requires a local Payment Service URL (or MASUMI_ALLOW_REMOTE_NODE=true with HTTPS)')
         if not all((api_key, agent_identifier, seller_vkey)):
             raise ValueError('Preprod requires a Payment API key, registered agent, and seller verification key')
         if payout_address is not None:

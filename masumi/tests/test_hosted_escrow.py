@@ -17,6 +17,7 @@ def adapter():
     result = object.__new__(HostedMasumiEscrow)
     result.input_hash, result.output_hash = lambda *_: "input-hash", lambda *_: "output-hash"
     result.url, result.api_key, result.agent_identifier, result.seller_vkey = HOSTED_URL, "mas_test", AGENT, SELLER
+    result.auth_header = "x-api-key"
     result.payout_address, result.fee_lovelace, result.contract, result.source_index = PAYOUT, "10000000", None, 0
     result.lovelace_per_usd, result.fixed_price, result.deadlines_min = None, False, HostedMasumiEscrow.DEFAULT_DEADLINES_MIN
     result.source_type = "Web3CardanoV2"
@@ -245,3 +246,19 @@ async def test_v1_source_type_selects_the_v1_contract_and_rail(hosted):
 def test_constructor_rejects_unknown_source_type():
     with pytest.raises(ValueError):
         HostedMasumiEscrow(HOSTED_URL, "mas_x", AGENT, SELLER, PAYOUT, "10000000", source_type="Web3CardanoV3")
+
+
+@pytest.mark.parametrize("url,header,ok", [
+    ("http://cardanocard-node.railway.internal:3001/api/v1/", "token", True),
+    ("http://cardanocard-node.railway.internal:3001/api/v1", "token", True),
+    ("https://evil.example/api/v1/", "token", False),
+    ("http://cardanocard-node.railway.internal:3001/", "token", False),
+    (HOSTED_URL, "cookie", False),
+])
+def test_own_railway_node_allowed_with_token_header(url, header, ok):
+    kwargs = dict(api_key="k", agent_identifier=AGENT, seller_vkey=SELLER, payout_address=PAYOUT, fee_lovelace="10000000", auth_header=header)
+    if ok:
+        e = HostedMasumiEscrow(url, **kwargs); assert e.url.endswith("/api/v1/") and e.auth_header == "token"
+    else:
+        with pytest.raises(ValueError):
+            HostedMasumiEscrow(url, **kwargs)
