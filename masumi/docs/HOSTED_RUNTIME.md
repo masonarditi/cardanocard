@@ -149,6 +149,26 @@ V1-only, and V2 purchasing arrived in masumi-payment-service **0.28.0**. A buyer
    `addr_test1wzs4e6…` / policy `67ab0c92…`; it refuses anything else. The purchasing wallet is the funded buyer
    `2dbca0e7…` exported from the 0.22 node (`work/.buyer-wallet-export.json`, gitignored).
 
+## Hosted chat front door and buyer node (2026-10-07 evening)
+
+Nothing of the iMessage flow runs on a laptop any more. Two more services in the same Railway project:
+
+- **`cardanocard-buyer-node`** — masumi-payment-service 0.29.0 (image service, start command
+  `npm run prisma:migrate && npm start`, healthcheck `/api/v1/health`), Postgres `Postgres-lNgE`
+  (`DATABASE_URL=${{Postgres-lNgE.DATABASE_URL}}?schema=public`), `ENCRYPTION_KEY`/`ADMIN_KEY`/`BLOCKFROST_API_KEY_PREPROD`
+  from `infra/masumi/.env`. Its database is a `pg_dump` of the local `infra/masumi-v2buyer` node (admin key, canonical
+  V2 source, purchasing wallet `2dbca0e7…`, selling wallet), restored through a temporary TCP proxy that was removed
+  afterwards. The local node is stopped: one node per wallet. Public URL
+  `https://cardanocard-buyer-node-production.up.railway.app/api/v1` (header `token`).
+- **`cardanocard-chat`** — `chat/Dockerfile` (python 3.12 + bun; `chat/start.sh` runs `buyer_agent.py` on 127.0.0.1:8788
+  and `bot.ts` on `$PORT`), volume `/data` (`CHAT_DATA`: passkeys, buyer.db), domain
+  `https://cardanocard-chat-production.up.railway.app` (`PUBLIC_URL`, the Face ID approval pages). Variables:
+  `V3_AGENT_URL=https://cardanocard-preprod-production.up.railway.app/v3`, `V2_BUYER_NODE_URL`/`V2_BUYER_NODE_KEY`
+  (the node above), `DELIVERY_ADDRESS`, `OWNER_PHONES`, `CHANNELS=imessage`, `SPECTRUM_PROJECT_ID/SECRET`
+  (Photon project; kept locally in `masumi/.env.chat`), `CHAT_VERBOSE=1`, `AGENTCARD_ENV=prod` (copy only).
+  Deploy: stage `chat/Dockerfile` as `Dockerfile` at the root of a directory holding `chat/`, `masumi/{pyproject.toml,
+  README.md,src,scripts/v2_hire.py}` and `demo/video/public`, then `railway up --ci --service cardanocard-chat`.
+
 ## End-to-end on the listed CardanoCard agent (2026-10-07, real card)
 
 Agent `67ab0c92…36cbc1000000` (`/v3`, Fixed 20 tUSDM, seller `37d35cc9…`), bought from our V2 buyer node, Agentcard

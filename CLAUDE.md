@@ -11,7 +11,9 @@ the purchase fails."
 - `agentcard/` — Agentcard side (owner: Mason). Exposes `purchase()`.
 - `masumi/` — Masumi agent (owner: Ezra). Calls `purchase()` through `ModulePurchaser` (`PURCHASE_BACKEND=mason`).
 - `chat/` — iMessage front door (owner: Mason, Photon Spectrum): a buyer agent that hires Cardano Card over MIP-003,
-  approves escrow with Face ID (passkey) and pays from Mason's Preprod buyer wallet. `chat/run.sh`; sandbox Agentcard only.
+  approves escrow with Face ID (passkey) and pays the escrow. Locally `chat/run.sh`; **hosted since 2026-10-07 evening**
+  as Railway `cardanocard-chat` (+ `cardanocard-buyer-node`, a 0.29 node with our funded buyer wallet) hiring the
+  deployed `/v3` agent with the real card — see `masumi/docs/HOSTED_RUNTIME.md` "Hosted chat front door".
 
 ## The contract (do not change without telling both people)
 
