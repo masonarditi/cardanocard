@@ -18,6 +18,7 @@ def adapter():
     result.input_hash, result.output_hash = lambda *_: "input-hash", lambda *_: "output-hash"
     result.url, result.api_key, result.agent_identifier, result.seller_vkey = HOSTED_URL, "mas_test", AGENT, SELLER
     result.payout_address, result.fee_lovelace, result.contract, result.source_index = PAYOUT, "10000000", None, 0
+    result.lovelace_per_usd = None
     return result
 
 
@@ -156,3 +157,27 @@ def test_constructor_pins_host_and_identity(kwargs):
             "payout_address": PAYOUT, "fee_lovelace": "10000000"}
     with pytest.raises(ValueError):
         HostedMasumiEscrow(**{**base, **kwargs})
+
+
+@pytest.mark.parametrize("budget,rate,expected", [
+    ("8.50", 1_000_000, "10000000"),    # below the floor -> floor (10 tADA)
+    ("12.34", 1_000_000, "12340000"),   # 12.34 tADA
+    ("12.345", 1_000_000, "12345000"),
+    ("7.00", 2_500_000, "17500000"),    # 2.5 tADA per USD
+    ("9999.00", 1_000_000, "100000000"),  # capped at 100 tADA
+])
+async def test_dynamic_escrow_follows_the_buyer_budget(hosted, budget, rate, expected):
+    escrow = adapter()
+    escrow.lovelace_per_usd = rate
+    hosted.payment["RequestedFunds"] = [{"unit": "", "amount": expected}]
+    terms = await escrow.create({"wire_input": {}, "caller_id": "a" * 26, "input": {"max_total_usd": budget}})
+    assert hosted.calls[-1][2]["RequestedFunds"] == [{"unit": "", "amount": expected}]
+    assert terms["RequestedFunds"] == [{"unit": "", "amount": expected}]
+
+
+async def test_service_cannot_change_the_dynamic_amount(hosted):
+    escrow = adapter()
+    escrow.lovelace_per_usd = 1_000_000
+    hosted.payment["RequestedFunds"] = [{"unit": "", "amount": "10000000"}]  # service echoes a different amount
+    with pytest.raises(ValueError, match="escrow amount"):
+        await escrow.create({"wire_input": {}, "caller_id": "a" * 26, "input": {"max_total_usd": "20.00"}})

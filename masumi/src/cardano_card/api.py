@@ -53,7 +53,8 @@ def configured_engine():
             escrow = HostedMasumiEscrow(os.getenv("PAYMENT_SERVICE_URL", ""), os.getenv("PAYMENT_API_KEY", ""),
                                         os.getenv("AGENT_IDENTIFIER", ""), os.getenv("SELLER_VKEY", ""),
                                         os.getenv("PAYOUT_ADDRESS", ""), os.getenv("MASUMI_FEE_LOVELACE", "10000000"),
-                                        os.getenv("MASUMI_PAYMENT_SOURCE_INDEX", "0"))
+                                        os.getenv("MASUMI_PAYMENT_SOURCE_INDEX", "0"),
+                                        lovelace_per_usd=os.getenv("MASUMI_LOVELACE_PER_USD") or None)
         elif mode == "preprod":
             if os.getenv("MASUMI_V1_COMPATIBLE") != "true":
                 raise ValueError("Validate the selected Payment Service against the pinned V1 SDK before Preprod use")

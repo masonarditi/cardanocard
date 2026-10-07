@@ -7,6 +7,7 @@ Request/response shapes come from the live hosted OpenAPI (work/hosted-openapi.j
 """
 import re
 from datetime import datetime, timezone
+from decimal import ROUND_CEILING, Decimal
 from urllib.parse import urlparse
 
 import httpx
@@ -24,7 +25,8 @@ class HostedMasumiEscrow(MasumiEscrow):
     automatic_requested_refund = False
     simulated = False
 
-    def __init__(self, url, api_key, agent_identifier, seller_vkey, payout_address, fee_lovelace, source_index=0):
+    def __init__(self, url, api_key, agent_identifier, seller_vkey, payout_address, fee_lovelace, source_index=0,
+                 lovelace_per_usd=None):
         parsed = urlparse(url)
         if url.rstrip('/') + '/' != HOSTED_URL or parsed.scheme != 'https':
             raise ValueError('The hosted adapter only talks to Masumi\'s hosted Preprod payment service')
@@ -42,6 +44,11 @@ class HostedMasumiEscrow(MasumiEscrow):
         self.payout_address, self.fee_lovelace = payout_address, str(int(fee_lovelace))
         # Index into the agent's registered supportedPaymentSources (the hosted V2 API requires it).
         self.source_index, self.contract = int(source_index), None
+        # Dynamic pricing: escrow per job = the buyer's USD budget at a fixed demo rate, so the payout reimburses the
+        # card that fronted the purchase. fee_lovelace is the floor (and the amount when no rate is configured).
+        if lovelace_per_usd is not None and (not str(lovelace_per_usd).isdigit() or int(lovelace_per_usd) <= 0):
+            raise ValueError('MASUMI_LOVELACE_PER_USD must be a positive integer')
+        self.lovelace_per_usd = int(lovelace_per_usd) if lovelace_per_usd is not None else None
 
     def client(self):
         # No redirects: a credential-bearing redirect off the fixed host must fail, never follow.
@@ -101,14 +108,25 @@ class HostedMasumiEscrow(MasumiEscrow):
                 data.get('agentIdentifier') in (None, self.agent_identifier) and
                 data.get('sellerReturnAddress') in (None, self.payout_address))
 
+    MAX_LOVELACE = 100_000_000  # 100 test ADA per job, same cap as the setup/acceptance tooling
+
+    def escrow_lovelace(self, job):
+        """Lovelace to lock for this job: budget x rate, floored at fee_lovelace, capped at 100 test ADA."""
+        if self.lovelace_per_usd is None:
+            return self.fee_lovelace
+        budget = Decimal(str((job.get('input') or {}).get('max_total_usd') or '0'))
+        amount = int((budget * self.lovelace_per_usd).to_integral_value(rounding=ROUND_CEILING))
+        return str(min(max(amount, int(self.fee_lovelace)), self.MAX_LOVELACE))
+
     async def create(self, job):
         route = await self.validate_payout()
         expected = self.input_hash(job['wire_input'], job['caller_id'])
+        lovelace = self.escrow_lovelace(job)
         data = await self.post('payment', {
             'network': 'Preprod', 'paymentSourceType': SOURCE_TYPE, 'agentIdentifier': self.agent_identifier,
             'identifierFromPurchaser': job['caller_id'], 'inputHash': expected,
             'supportedPaymentSourceIndex': self.source_index,
-            'RequestedFunds': [{'unit': '', 'amount': self.fee_lovelace}],
+            'RequestedFunds': [{'unit': '', 'amount': lovelace}],
             'sellerReturnAddress': self.payout_address, **self.deadlines(datetime.now(timezone.utc))})
         if not self._identity_ok(data, expected, route['smartContractAddress']):
             raise ValueError('Payment response identity does not match')
@@ -120,8 +138,8 @@ class HostedMasumiEscrow(MasumiEscrow):
         if not result['payByTime'] < result['submitResultTime'] <= result['unlockTime'] <= result['externalDisputeUnlockTime']:
             raise ValueError('Unexpected escrow deadline ordering')
         funds = self.funds(data.get('RequestedFunds'))
-        if funds != [{'unit': '', 'amount': self.fee_lovelace}]:
-            raise ValueError('Hosted service changed the requested fee')
+        if funds != [{'unit': '', 'amount': lovelace}]:
+            raise ValueError('Hosted service changed the requested escrow amount')
         result.update(agentIdentifier=self.agent_identifier, sellerVKey=self.seller_vkey, inputHash=expected,
                       RequestedFunds=funds, smartContractAddress=route['smartContractAddress'],
                       payoutAddress=self.payout_address, paymentSourceType=SOURCE_TYPE, rail='hosted-v2')
