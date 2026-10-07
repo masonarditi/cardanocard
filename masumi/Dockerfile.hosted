@@ -1,0 +1,14 @@
+# Real Cardano Card runtime for Railway: Preprod escrow via Masumi's hosted payment service, no local node.
+# Secrets arrive as Railway variables; the job database lives on the attached volume (CARDANO_CARD_DB=/data/jobs.db).
+FROM python:3.12-slim
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir '.[masumi]' && apt-get purge -y git && apt-get autoremove -y && useradd --uid 10001 --create-home agent && mkdir -p /data && chown agent /data
+USER agent
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PORT=8080 CARDANO_CARD_HOST=0.0.0.0 CARDANO_CARD_MODE=hosted \
+    CARDANO_CARD_PUBLIC_JOBS=true CARDANO_CARD_FRONTEND=false CARDANO_CARD_LIVE_OUTPUT=true CARDANO_CARD_DB=/data/jobs.db
+EXPOSE 8080
+VOLUME ["/data"]
+CMD ["python", "-m", "cardano_card.api"]
