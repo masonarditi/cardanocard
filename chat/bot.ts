@@ -1,7 +1,7 @@
 // Cardano Card in iMessage (Photon Spectrum): text a request, approve the escrow with Face ID (passkey),
 // then follow the Masumi job from quote to order. The buyer agent (buyer_agent.py) does the hiring and paying.
-import { Spectrum, app as appCard, edit, richlink, type Space } from "spectrum-ts";
-import { imessage } from "spectrum-ts/providers/imessage";
+import { Spectrum, app as appCard, contact, edit, markdown, richlink, type Space } from "spectrum-ts";
+import { effect, imessage } from "spectrum-ts/providers/imessage";
 import { terminal } from "spectrum-ts/providers/terminal";
 import { telegram } from "spectrum-ts/providers/telegram";
 import { whatsappBusiness } from "spectrum-ts/providers/whatsapp-business";
@@ -10,6 +10,8 @@ import {
   verifyAuthenticationResponse, verifyRegistrationResponse,
 } from "@simplewebauthn/server";
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
+import { avatar, statusCard, type Stage } from "./cards";
+import { page } from "./page";
 
 for (const event of ["unhandledRejection", "uncaughtException"])
   process.on(event, (e: any) => console.log(`send failed: ${e?.message ?? e}`));
@@ -20,18 +22,39 @@ const digits = (s: string) => s.replace(/\D/g, "").slice(-10);
 const OWNERS = (process.env.OWNER_PHONES ?? "").split(",").map(digits).filter(Boolean);
 const TG_OWNERS = (process.env.OWNER_TELEGRAM_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const owner = (platform: string, id: string) => platform === "telegram" ? TG_OWNERS.includes(id) : OWNERS.includes(digits(id));
-const SCAN = "https://preprod.cardanoscan.io/transaction/";
 const SANDBOX = (process.env.AGENTCARD_ENV ?? "sandbox") !== "prod";
-const KEYS = `${import.meta.dir}/data/passkeys.json`;
-const BUY = /\b(?:buy|get|order)\s+(?:me\s+)?(.+?)(?:\s+(?:under|below|max|up to)\s+\$?(\d+(?:\.\d{1,2})?))?[.!?]*$/i;
+const CITY = (({ city, state }) => city ? `${city}, ${state}` : "you")(JSON.parse(process.env.DELIVERY_ADDRESS ?? "{}"));
+const DATA = `${import.meta.dir}/data`, PUBLIC_ASSETS = `${import.meta.dir}/../demo/video/public`;
+const KEYS = `${DATA}/passkeys.json`, SEEN = `${DATA}/seen.json`;
+const GREETING = /^(hi|hey|hello|yo|start|contact)\b/i;
+const VERB = /^(?:(?:can you|could you|please)\s+)?(?:buy|get|order|grab)\s+(?:me\s+)?/i;
+const PRICE = /\s+(?:under|below|for under|for less than|less than|max|up to)\s+\$?(\d+(?:\.\d{1,2})?)\s*[.!?]*$/i;
 
 type Quote = { merchant: string; items: { name: string }[]; subtotal_cents: number; authorization_ceiling_cents: number };
-type Job = { id: string; space: Space; platform: string; token: string; max: number; card?: any; quote?: Quote; approved?: boolean; challenge?: string; stage: string };
+type Job = { id: string; space: Space; platform: string; token: string; max: number; quote?: Quote; stage: Stage | "quote";
+  tx?: string; tada: number; approved?: boolean; challenge?: string; card?: any };
 type Key = { id: string; publicKey: string; counter: number };
 const jobs = new Map<string, Job>();
-const keys: Record<string, Key[]> = (await Bun.file(KEYS).exists()) ? await Bun.file(KEYS).json() : {};
-const usd = (cents: number) => `$${(cents / 100).toFixed(2)}`;
-const item = (q?: Quote) => q?.items.map((i) => i.name).join(", ").slice(0, 80) ?? "your order";
+const load = async <T>(path: string, empty: T): Promise<T> => (await Bun.file(path).exists()) ? Bun.file(path).json() : empty;
+const keys = await load<Record<string, Key[]>>(KEYS, {});
+const seen = await load<string[]>(SEEN, []);
+const AVATAR = await avatar();
+const usd = (cents = 0) => `$${(cents / 100).toFixed(2)}`;
+
+// Amazon titles run long: the headline is the part before the first comma or "with", the rest is detail.
+function title(q?: Quote) {
+  const full = q?.items[0]?.name ?? "your order";
+  const cut = full.search(/,|\swith\s|\s[-–]\s/i);
+  const [head, detail] = cut > 0 ? [full.slice(0, cut).trim(), full.slice(cut).replace(/^[,\s–-]+/, "")] : [full, ""];
+  return { head: head.length > 46 ? head.slice(0, head.lastIndexOf(" ", 44)) + "…" : head, detail };
+}
+
+const view = (job: Job, stage = job.stage as Stage) => {
+  const { head, detail } = title(job.quote);
+  return { stage, item: head, detail, merchant: job.quote?.merchant ?? "Amazon", price: usd(job.quote?.subtotal_cents),
+    ceiling: usd(job.quote?.authorization_ceiling_cents), escrow: `${job.tada} tADA`, tx: job.tx,
+    og: `${PUBLIC}/og/${job.token}?s=${stage}` };
+};
 
 const buyer = async (path: string, body?: object): Promise<any> => {
   const r = await fetch(BUYER + path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
@@ -39,8 +62,8 @@ const buyer = async (path: string, body?: object): Promise<any> => {
   return r.json();
 };
 
-// One card per job, edited in place as the job moves (new query string so iMessage refetches the preview).
-async function showCard(job: Job, stage: string) {
+// One live card per job, edited in place (a new query string makes iMessage refetch the preview image).
+async function showCard(job: Job, stage: Stage) {
   job.stage = stage;
   if (job.platform !== "imessage") return;
   const card = appCard(`${PUBLIC}/a/${job.token}?s=${stage}`);
@@ -48,48 +71,80 @@ async function showCard(job: Job, stage: string) {
   else await job.space.send(edit(card, job.card)).catch(() => {});
 }
 
+const contactCard = (space: Space) => contact({
+  name: { formatted: "Cardano Card", first: "Cardano", last: "Card" },
+  phones: [{ value: (imessage(space as any) as any).phone, type: "work" }],
+  org: { name: "Agent on Masumi", title: "Buys anything a card can" },
+  note: "Pay in ADA through Masumi escrow on Cardano. Refunded if the purchase fails.",
+  photo: { mimeType: "image/png", read: async () => AVATAR },
+});
+
+async function introduce(space: Space, platform: string) {
+  await space.send(markdown("Hey, I'm **Cardano Card** 👋 Tell me what you want and your budget, and I'll buy it for you.\n\n" +
+    "You pay in ADA through escrow on Cardano, so if an order doesn't go through, you get it all back."));
+  if (platform === "imessage") await space.send(contactCard(space)).catch((e) => console.log(`contact card failed: ${e.message}`));
+}
+
 async function follow(job: Job) {
-  const said = new Set<string>();
-  const say = async (key: string, text: string) => {
-    if (!said.has(key)) { said.add(key); await job.space.send(text); }
-  };
+  const done = new Set<string>();
+  const once = async (key: string, fn: () => Promise<unknown>) => { if (!done.has(key)) { done.add(key); await fn(); } };
+  let typed = 0;
   for (;;) {
     const v = await buyer(`/jobs/${job.id}`).catch(() => null);
-    const p = v?.phase, tadA = v ? v.fee_lovelace / 1e6 : 0;
-    if (p === "awaiting_quote_approval" && v.quote.subtotal_cents > job.max * 100)
-      return say("pricey", `Best match is ${item(v.quote)} at ${usd(v.quote.subtotal_cents)}, over your $${job.max} limit. Not buying.`);
-    if (p === "awaiting_quote_approval" && !said.has("quote")) {
+    const p: string = v?.phase ?? "";
+    if (["quote_queued", "preparing_quote", "quote_reconciling"].includes(p) && Date.now() - typed > 15000) {
+      typed = Date.now();
+      await job.space.startTyping().catch(() => {});
+    }
+    if (p === "awaiting_quote_approval" && !done.has("quote")) {
       job.quote = v.quote;
-      await say("quote", `Found it: ${item(v.quote)} — ${usd(v.quote.subtotal_cents)} on ${v.quote.merchant} (card hold up to ${usd(v.quote.authorization_ceiling_cents)} for fees and tax).\n` +
-        `To buy it, lock ${tadA} tADA in Masumi escrow. If the purchase fails, it's refunded.`);
-      // A plain link opens Safari, where passkeys (Face ID) work; the in-Messages app card is used for status after approval.
-      job.stage = "approve";
-      await job.space.send(richlink(`${PUBLIC}/a/${job.token}`));
+      const { head } = title(v.quote), price = usd(v.quote.subtotal_cents);
+      await job.space.stopTyping().catch(() => {});
+      if (v.quote.subtotal_cents > job.max * 100) {
+        await job.space.send(markdown(`The closest I found is **${head}** at **${price}**, which is over your $${job.max} limit, so I didn't buy anything.`));
+        return;
+      }
+      await once("quote", async () => {
+        await job.space.send(markdown(`Found **${head}** for **${price}** on ${v.quote.merchant}.\n\n` +
+          `To buy it, I'll hold **${job.tada} tADA** in escrow on Cardano. If the order doesn't go through, you get it all back.`));
+        // A plain link opens Safari, where passkeys (Face ID) work; the in-Messages card is used for status after approval.
+        job.stage = "approve";
+        await job.space.send(richlink(`${PUBLIC}/a/${job.token}`));
+      });
     }
-    if (job.approved) await say("approved", `✅ Approved with Face ID. Locking ${tadA} tADA in escrow on Cardano…`);
-    if (v?.lock_txs?.length) {
-      await say("locked", `🔒 Escrow locked on Cardano Preprod\n${SCAN}${v.lock_txs[0]}`);
-      if (job.stage === "approved") await showCard(job, "locked");
+    if (v?.lock_txs?.length && !job.tx) {
+      job.tx = v.lock_txs[0];
+      await once("locked", async () => {
+        await showCard(job, "locked");
+        await job.space.send(`Locked in escrow on Cardano. Placing your order with ${job.quote?.merchant ?? "Amazon"} now.`);
+      });
     }
-    if (p === "purchasing") await say("buying", `🛒 Funds confirmed. Checking out on ${job.quote?.merchant ?? "Amazon"}…`);
+    if (p === "purchasing") await once("checkout", () => showCard(job, "checkout"));
     if (["submitting_result", "result_submitted", "paid"].includes(p) && v.purchase?.order_id) {
-      await say("ordered", `📦 Ordered! Order ${String(v.purchase.order_id).slice(0, 8)}… Proof of purchase is going on-chain.`);
-      if (job.stage !== "ordered") await showCard(job, "ordered");
+      await showCard(job, "ordered");
+      await job.space.send(effect(markdown(`Ordered 🎉 **${title(job.quote).head}** is on its way to ${CITY}.`), imessage.effect.message.confetti));
+      return;
     }
-    if (p === "result_submitted" || p === "paid") return say("done", "⛓️ Result recorded on Cardano. Cardano Card is paid when escrow unlocks.");
-    if (p === "refund_due" || p === "refunded") {
-      const why = SANDBOX && v.purchase?.reason === "declined" ? "Agentcard sandbox card, no real checkout" : v.purchase?.reason ?? "declined";
-      await say("declined", `❌ Purchase didn't go through (${why}). Nothing was charged. Refunding your ${tadA} tADA…`);
-      if (p === "refund_due" && job.stage !== "refunding") await showCard(job, "refunding");
-    }
+    if (p === "refund_due" || p === "refunded") await once("declined", async () => {
+      await showCard(job, "refunding");
+      await job.space.send(SANDBOX && v.purchase?.reason === "declined"
+        ? `${job.quote?.merchant ?? "Amazon"} didn't accept the card. This is Agentcard's sandbox card, so no real order was placed and nothing was charged. Your ${job.tada} tADA is on its way back.`
+        : `The order didn't go through and nothing was charged. Your ${job.tada} tADA is on its way back.`);
+    });
     if (p === "refunded") {
       await showCard(job, "refunded");
-      return say("refunded", "↩️ Escrow refunded to your wallet.");
+      await job.space.send(`Your ${job.tada} tADA is back in your wallet ✓`);
+      return;
     }
-    if (p === "quote_rejected")
-      return say("stop", "Couldn't find a clean match under your limit, so nothing was bought. Try being more specific, like adding \"from Amazon\".");
-    if (["quote_expired", "manual_review", "payment_creation_unknown", "expired"].includes(p))
-      return say("stop", `Stopped at ${p.replaceAll("_", " ")}. No card charge was made.`);
+    if (p === "quote_rejected") {
+      await job.space.stopTyping().catch(() => {});
+      await job.space.send(`I couldn't find a good match for that under $${job.max}. Try adding the brand, or "from Amazon".`);
+      return;
+    }
+    if (["quote_expired", "manual_review", "payment_creation_unknown", "expired"].includes(p)) {
+      await job.space.send("Something went wrong on my end, so I stopped before buying anything. Nothing was charged.");
+      return;
+    }
     await Bun.sleep(3000);
   }
 }
@@ -97,46 +152,29 @@ async function follow(job: Job) {
 async function approve(job: Job) {
   await buyer(`/jobs/${job.id}/approve`, {});
   job.approved = true;
+  await job.space.send(`Approved ✓ Locking your ${job.tada} tADA in escrow…`);
   await showCard(job, "approved");
 }
 
-const page = (job: Job) => {
-  const q = job.quote, s = job.stage;
-  const title = s === "approve" ? `Approve ${usd(q?.subtotal_cents ?? 0)} · ${item(q)}`
-    : s === "ordered" ? `📦 Ordered · ${item(q)}` : s === "refunded" ? `↩️ Refunded · ${item(q)}` : s === "refunding" ? `↩️ Refunding 10 tADA · ${item(q)}`
-    : s === "locked" ? `🔒 Escrow locked · ${item(q)}` : `✅ Approved · ${item(q)}`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title}</title><meta property="og:title" content="${title}">
-<meta property="og:description" content="Cardano Card · Masumi escrow on Cardano · refunded if the purchase fails">
-<style>body{font:17px -apple-system,system-ui;background:#F5F5F5;color:#111;margin:0;padding:28px 20px}
-.c{background:#fff;border-radius:22px;padding:24px;box-shadow:0 10px 40px #0001}h1{font-size:22px;margin:0 0 6px}
-.m{color:#666;font-size:15px}.r{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #eee}
-button{width:100%;margin-top:22px;padding:16px;border:0;border-radius:14px;background:#FA008C;color:#fff;font:600 17px -apple-system}
-#s{margin-top:14px;text-align:center;color:#666}</style></head><body><div class="c">
-<div class="m">Cardano Card</div><h1>${item(q)}</h1>
-<div class="r"><span class="m">Price</span><b>${usd(q?.subtotal_cents ?? 0)} · ${q?.merchant ?? ""}</b></div>
-<div class="r"><span class="m">Card ceiling</span><b>${usd(q?.authorization_ceiling_cents ?? 0)}</b></div>
-<div class="r"><span class="m">Escrow</span><b>10 tADA · Masumi</b></div>
-${s === "approve" ? `<button id="b">Approve with Face ID</button>` : `<h2 style="text-align:center;margin-top:22px">${title}</h2>`}
-<p id="s"></p></div><script src="/webauthn.js"></script><script>
-const b=document.getElementById('b'),s=document.querySelectorAll('#s')[0];
-b&&(b.onclick=async()=>{try{
-const {mode,options}=await (await fetch(location.pathname+'/options',{method:'POST'})).json();
-const f=mode==='register'?SimpleWebAuthnBrowser.startRegistration:SimpleWebAuthnBrowser.startAuthentication;
-const r=await (await fetch(location.pathname+'/verify',{method:'POST',body:JSON.stringify(await f({optionsJSON:options}))})).json();
-s.textContent=r.ok?'✅ Approved. Back to Messages.':'Not approved';if(r.ok)b.remove();
-}catch(e){s.innerHTML='Face ID unavailable here. <a href="x-safari-'+location.href+'">Open in Safari</a>'}})
-</script></body></html>`;
-};
-
 const byToken = (t: string) => [...jobs.values()].find((j) => j.token === t);
+const html = (body: string) => new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
 Bun.serve({
   port: Number(process.env.PORT ?? 8789),
   routes: {
     "/webauthn.js": () => new Response(Bun.file(`${import.meta.dir}/node_modules/@simplewebauthn/browser/dist/bundle/index.umd.min.js`)),
+    "/assets/masumi.webp": () => new Response(Bun.file(`${PUBLIC_ASSETS}/masumi-wordmark.webp`)),
+    "/assets/cardano.svg": () => new Response(Bun.file(`${PUBLIC_ASSETS}/cardano-horizontal-blue.svg`)),
+    "/avatar.png": () => new Response(AVATAR, { headers: { "content-type": "image/png" } }),
     "/a/:t": (req) => {
       const job = byToken(req.params.t);
-      return job ? new Response(page(job), { headers: { "content-type": "text/html" } }) : new Response("Not found", { status: 404 });
+      return job?.quote ? html(page(view(job))) : new Response("Not found", { status: 404 });
+    },
+    "/a/:t/state": (req) => Response.json({ stage: byToken(req.params.t)?.stage }),
+    "/og/:t": async (req) => {
+      const job = byToken(req.params.t);
+      if (!job?.quote) return new Response("Not found", { status: 404 });
+      const stage = (new URL(req.url).searchParams.get("s") ?? job.stage) as Stage;
+      return new Response(await statusCard(view(job, stage)), { headers: { "content-type": "image/png", "cache-control": "public, max-age=31536000" } });
     },
     "/a/:t/options": {
       POST: async (req) => {
@@ -145,7 +183,7 @@ Bun.serve({
         const mine = keys[RP] ?? [];
         const options = mine.length
           ? await generateAuthenticationOptions({ rpID: RP, userVerification: "required", allowCredentials: mine.map((k) => ({ id: k.id })) })
-          : await generateRegistrationOptions({ rpName: "Cardano Card", rpID: RP, userName: "Cardano Card owner", attestationType: "none",
+          : await generateRegistrationOptions({ rpName: "Cardano Card", rpID: RP, userName: "Cardano Card", attestationType: "none",
               authenticatorSelection: { residentKey: "preferred", userVerification: "required" } });
         job.challenge = options.challenge;
         return Response.json({ mode: mine.length ? "authenticate" : "register", options });
@@ -195,20 +233,30 @@ console.log(`Cardano Card chat on ${cloud ? channels.join(", ") : "terminal"} ·
 
 async function handle(space: Space, message: any) {
   if (message.content.type !== "text") return;
-  const text = message.content.text.trim();
+  const text: string = message.content.text.trim();
   const sender = message.sender?.id ?? "";
   console.log(`${message.platform} message from ${sender}: ${text.slice(0, 80)}`);
   if (cloud && !owner(message.platform, sender)) return console.log(`ignored ${message.platform} message from ${sender}`);
   const open = [...jobs.values()].find((j) => j.space.id === space.id && j.stage === "approve" && !j.approved);
   if (!cloud && open && /^\/?approve$/i.test(text)) return approve(open);
-  const m = text.match(BUY);
-  if (!m) return space.send("Text me what to buy, like: buy a pack of Trident gum from Amazon under $5");
-  const max = Number(m[2] ?? 20);
+  const fresh = !seen.includes(space.id), greeting = GREETING.test(text);
+  if (fresh) {
+    seen.push(space.id);
+    await Bun.write(SEEN, JSON.stringify(seen));
+  }
+  if (fresh || greeting) await introduce(space, message.platform);
+  const price = text.match(PRICE);
+  if (!VERB.test(text) && !price) {
+    if (!greeting) await space.send(`Tell me what you want and your budget, like "Trident gum from Amazon under $5".`);
+    return;
+  }
+  const ask = text.replace(PRICE, "").replace(VERB, "").trim(), max = Number(price?.[1] ?? 20);
   await message.react("👍").catch(() => {});
-  await space.send(`On it. Asking Cardano Card on Masumi for a quote on "${m[1]}" (max $${max}).`);
+  await space.send(`Looking for ${ask} under $${max}…`);
   // The budget must cover the card's authorization ceiling (~$11 over the item price), so the price cap goes in the ask.
-  const { job_id } = await buyer("/jobs", { ask: `${m[1]} under $${max}`, max_total_usd: max + 12 });
-  const job: Job = { id: job_id, space, platform: message.platform, token: crypto.randomUUID().replaceAll("-", ""), stage: "quote", max };
+  const { job_id } = await buyer("/jobs", { ask: `${ask} under $${max}`, max_total_usd: max + 12 });
+  const job: Job = { id: job_id, space, platform: message.platform, token: crypto.randomUUID().replaceAll("-", ""),
+    stage: "quote", max, tada: 10 };
   jobs.set(job_id, job);
   follow(job).catch((e) => console.log(`follow ${job_id} stopped: ${e.message}`));
 }
