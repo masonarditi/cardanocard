@@ -133,7 +133,9 @@ async def test_unknown_or_partial_cannot_refund_or_repeat(engine, scenario):
     assert engine.store.get('staged_fake', job['id'])['confirmations'] == 1
     await engine.simulate(job['id'], 'request_refund')
     await engine.tick()
-    assert engine.get(job['id'])['phase'] == 'manual_review'
+    # Keeps inspecting (never refunds or reconfirms) while the purchase is unresolved.
+    assert engine.get(job['id'])['phase'] in {'processing', 'reconciling'}
+    assert engine.store.get('staged_fake', job['id'])['confirmations'] == 1
 
 
 async def test_confirm_timeout_restart_inspects_only(engine):
@@ -290,7 +292,8 @@ async def test_later_no_purchase_claim_cannot_erase_partial_order_evidence(engin
     assert engine.evidence(engine.get(job['id']))['checkout_evidence']['possible_purchase'] is True
     await engine.simulate(job['id'],'request_refund')
     await engine.tick()
-    assert engine.get(job['id'])['phase'] == 'manual_review'
+    assert engine.get(job['id'])['phase'] == 'reconciling'
+    assert engine.evidence(engine.get(job['id']))['checkout_evidence']['possible_purchase'] is True
 
 
 def test_existing_staged_database_cannot_switch_recipient_or_purchase_mode(engine):

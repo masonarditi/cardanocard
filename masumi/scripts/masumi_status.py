@@ -47,10 +47,12 @@ try:
     path.write_text(json.dumps({'network':'Preprod','wallets':wallets}, indent=2))
     path.chmod(0o600)
     if args.balances:
-        key=values.get('BLOCKFROST_API_KEY_PREPROD','')
-        if not key.startswith('preprod'):
-            raise ValueError('Preprod key missing')
-        with httpx.Client(base_url='https://cardano-preprod.blockfrost.io/api/v0/', headers={'project_id':key}, timeout=20) as chain:
+        from cardano_card.chain_evidence import PROVIDERS, chain_credential_ok, chain_provider
+        name, key = chain_provider(values)
+        if not chain_credential_ok(name, key):
+            raise ValueError('Preprod chain-provider key missing')
+        base, header = PROVIDERS[name]
+        with httpx.Client(base_url=base, headers={header:key}, timeout=20) as chain:
             for wallet in wallets:
                 response=chain.get('addresses/'+wallet['walletAddress'])
                 if response.status_code == 404:

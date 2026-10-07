@@ -63,3 +63,7 @@ def main():
                 return
             time.sleep(0.3)
         raise SystemExit("Still pending; saved job can be inspected/resumed. No second purchase was started.")
+
+
+if __name__ == "__main__":
+    main()

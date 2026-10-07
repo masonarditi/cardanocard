@@ -28,8 +28,30 @@ def _load():
     return json.loads(LEDGER.read_text()) if LEDGER.exists() else {}
 
 
+# Agentcard's order-ledger vocabulary is only partly observed (v1's gum order showed `placed`; tests assumed
+# `settled`). Anything that says the order exists and the charge stuck counts as confirmed; anything that says
+# the order died is checked against charge_status; everything else keeps the job pending (never refunded).
+ORDER_DONE = {"settled", "placed", "confirmed", "completed", "complete", "shipped", "delivered"}
+ORDER_DEAD = {"failed", "cancelled", "canceled", "rejected", "voided"}
+CHARGED = {"captured", "authorized", "settled", "charged"}
+
+
+def _cents(*candidates):
+    """First candidate that is a whole number of cents (int, int-valued float or digit string)."""
+    for value in candidates:
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
+
+
 def _save(rec):
-    tmp = LEDGER.with_suffix(".tmp")
+    tmp = LEDGER.with_suffix(f".{os.getpid()}.tmp")
     tmp.write_text(json.dumps({**_load(), rec["job_id"]: rec}, indent=2))
     os.replace(tmp, LEDGER)
 
@@ -56,10 +78,14 @@ def _wire(rec):
            "conversation_id": rec["conversation_id"] or "", "cart_hash": q.get("cart_hash", ""), **IDENTITY,
            "order_id": order.get("order_id"), "reason": o.get("decline_code") or o.get("reason")}
     if o["status"] == "confirmed":
-        out.update(merchant_confirmed=True, charge_status="captured", total_cents=order.get("total_cents"),
+        # The charge is capped at the authorization ceiling, so the quote's estimate is the fallback total.
+        total = _cents(order.get("total_cents"), order.get("totalCents"), o.get("charge_total_cents"),
+                       q.get("estimated_total_cents"), q.get("subtotal_cents"))
+        out.update(merchant_confirmed=True, charge_status="captured", total_cents=total,
                    merchant=order.get("merchant_name") or q.get("merchant"), items=items)
     elif o["status"] == "failed_no_purchase":
-        out.update(no_purchase=not order.get("order_id"), charge_status="none")
+        # Only emitted once Agentcard said nothing was charged (or nothing was ever sent).
+        out.update(no_purchase=True, charge_status="none")
     elif o["status"] == "approval_required":
         out["approval_url"] = o.get("approval_url")
     return out
@@ -95,6 +121,8 @@ def _quote(rec, cart, allowed):
         return "ambiguous_amount"
     if currency != "usd":
         return "unsupported_currency"
+    if max(amounts) > CARD_LIMIT_CENTS:
+        return "over_card_limit"  # not quoted: no budget can approve it, so don't let escrow be funded for it
     if max(amounts) > rec["budget_cents"]:
         return "over_budget"
 
@@ -151,11 +179,9 @@ def confirm_purchase(*, job_id: str, quote_id: str) -> dict:
     if code == 409 and isinstance(r, dict) and r.get("cart"):
         attempt["state"] = "no_charge"
         return _out(rec, "failed_no_purchase", reason="cart_changed", detail=_detail(r))
-    if code >= 500 or code == 409:
-        return _inspect(rec, detail=_detail(r))
     if code >= 400:
-        attempt["state"] = "no_charge"
-        return _out(rec, "failed_no_purchase", reason="error", http_status=code, detail=_detail(r))
+        # After a confirm no HTTP error proves nothing was charged (408/429/proxy errors included): read the ledger.
+        return _inspect(rec, detail=_detail(r))
     decline = r.get("decline_code")
     if r.get("status") == "partially_placed":
         attempt["state"] = "charged"
@@ -199,15 +225,19 @@ def _inspect(rec, detail=None):
         o = orders[0]
         if saved_id and o.get("order_id") != saved_id:
             return _out(rec, "pending", reason="order_mismatch", detail=o.get("order_id"))
-        rec["order"] = {k: o.get(k) for k in ("order_id", "status", "total_cents", "merchant_name", "placed_at")}
+        rec["order"] = {k: o.get(k) for k in ("order_id", "status", "total_cents", "totalCents", "merchant_name",
+                                               "placed_at", "charge_status")}
         for a in rec["attempts"]:
             a["state"] = "charged" if a["state"] == "sent" else a["state"]
-        status = o.get("status")
-        if status == "settled":
-            return _out(rec, "confirmed")
-        if status == "failed":
-            return _out(rec, "failed_no_purchase", reason="funding_failed")
-        return _out(rec, "pending", reason="charge_confirming" if status == "confirming" else f"order_{status}")
+        status, last = str(o.get("status") or "").lower(), conv.get("last_checkout") or {}
+        charge = str(o.get("charge_status") or last.get("charge_status") or "").lower()
+        if status in ORDER_DEAD:
+            if charge == "none":
+                return _out(rec, "failed_no_purchase", reason="funding_failed")
+            return _out(rec, "pending", reason=f"order_{status}_charge_{charge or 'unknown'}")
+        if status in ORDER_DONE or charge in CHARGED:
+            return _out(rec, "confirmed", charge_total_cents=_cents(last.get("total_cents"), last.get("totalCents")))
+        return _out(rec, "pending", reason="charge_confirming" if status == "confirming" else f"order_{status or 'unknown'}")
     last = conv.get("last_checkout") or {}
     if saved_id:
         return _out(rec, "pending", reason="order_not_in_ledger_yet")

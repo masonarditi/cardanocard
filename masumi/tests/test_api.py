@@ -1,4 +1,5 @@
 import httpx
+import pytest
 
 from cardano_card.api import create_app
 from cardano_card.engine import Engine
@@ -76,7 +77,7 @@ def test_preprod_rejects_unverified_configuration(monkeypatch):
     import pytest
     from cardano_card.api import configured_engine
     monkeypatch.setenv("CARDANO_CARD_MODE", "Mainnet")
-    with pytest.raises(ValueError, match="Only local and Preprod"):
+    with pytest.raises(ValueError, match="modes are supported"):
         configured_engine()
 
 
@@ -112,3 +113,138 @@ async def test_replay_demo_and_private_evidence(tmp_path):
             assert TOKEN not in str(proof)
     finally:
         store.close()
+
+
+def test_production_card_requires_real_escrow(monkeypatch, tmp_path):
+    import pytest
+    from cardano_card.api import configured_engine
+    monkeypatch.setenv("CARDANO_CARD_MODE", "local")
+    monkeypatch.setenv("PURCHASE_BACKEND", "mason")
+    monkeypatch.setenv("AGENTCARD_ENV", "prod")
+    monkeypatch.setenv("CARDANO_CARD_DB", str(tmp_path / "jobs.db"))
+    with pytest.raises(ValueError, match="Preprod escrow"):
+        configured_engine()
+
+
+def test_hosted_mode_builds_hosted_escrow_without_local_node(monkeypatch, tmp_path):
+    from cardano_card.api import configured_engine
+    from cardano_card.hosted_escrow import HOSTED_URL, HostedMasumiEscrow
+    monkeypatch.setenv("CARDANO_CARD_MODE", "hosted")
+    monkeypatch.setenv("PURCHASE_BACKEND", "fake")
+    monkeypatch.setenv("CARDANO_CARD_DB", str(tmp_path / "jobs.db"))
+    monkeypatch.setenv("PAYMENT_SERVICE_URL", HOSTED_URL)
+    monkeypatch.setenv("PAYMENT_API_KEY", "mas_test")
+    monkeypatch.setenv("AGENT_IDENTIFIER", "67ab0c92" + "0" * 108)
+    monkeypatch.setenv("SELLER_VKEY", "ebef83fc35d6c43f6a69b3d2666d6b8ff27862ce84ee0603d3d7a038")
+    monkeypatch.setenv("PAYOUT_ADDRESS", "addr_test1qpgq4gf9fmzg3gkdnp9jdtujtscr2qdms07tmtp8aqz5ykc7uvlelkeuqsgctx9n4en6xmkf4qhqkumzcc3qwt4845hqsxwadj")
+    monkeypatch.delenv("MASUMI_V1_COMPATIBLE", raising=False)
+    engine = configured_engine()
+    try:
+        assert isinstance(engine.escrow, HostedMasumiEscrow) and engine.escrow.simulated is False
+    finally:
+        engine.store.close()
+
+
+async def test_public_jobs_open_mip003_routes_but_keep_operator_routes_gated(tmp_path):
+    from cardano_card.api import create_app
+    from cardano_card.engine import Engine
+    from cardano_card.providers import FakeEscrow, FakePurchaser
+    from cardano_card.store import Store
+    store = Store(str(tmp_path / "jobs.db"))
+    engine = Engine(store, FakeEscrow(store), FakePurchaser(store))
+    app = create_app(engine=engine, token="t" * 32, background=False, frontend=False, public_jobs=True)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            async with app.router.lifespan_context(app):
+                payload = {"identifier_from_purchaser": "c" * 26, "input_data": {
+                    "ask": "Buy a sample", "max_total_usd": "10.00", "street": "1 St", "city": "X", "state": "CA",
+                    "zip": "00000", "phone": "+12025550123", "name": "Demo"}}
+                started = await client.post("/start_job", json=payload)
+                assert started.status_code == 200, started.text
+                assert (await client.get("/status", params={"job_id": started.json()["id"]})).status_code == 200
+                assert (await client.get("/jobs")).status_code == 401
+                assert (await client.get("/evidence", params={"job_id": started.json()["id"]})).status_code == 401
+    finally:
+        store.close()
+
+
+async def test_masumi_verification_endpoint_returns_hmac_of_challenge(tmp_path, monkeypatch):
+    import hashlib, hmac
+    from cardano_card.api import create_app
+    from cardano_card.engine import Engine
+    from cardano_card.providers import FakeEscrow, FakePurchaser
+    from cardano_card.store import Store
+    store = Store(str(tmp_path / "jobs.db"))
+    app = create_app(engine=Engine(store, FakeEscrow(store), FakePurchaser(store)), token="t" * 32, background=False, frontend=False)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            async with app.router.lifespan_context(app):
+                monkeypatch.delenv("MASUMI_VERIFICATION_SECRET", raising=False)
+                assert (await client.get("/get-credential", params={"masumi_challenge": "c"})).status_code == 404
+                monkeypatch.setenv("MASUMI_VERIFICATION_SECRET", "s3cret")
+                r = await client.get("/get-credential", params={"masumi_challenge": "abc-123"})
+                assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
+                assert r.text == hmac.new(b"s3cret", b"abc-123", hashlib.sha256).hexdigest()
+    finally:
+        store.close()
+
+
+async def test_path_prefix_serves_the_same_app(tmp_path):
+    from cardano_card.api import PathPrefixes, create_app
+    from cardano_card.engine import Engine
+    from cardano_card.providers import FakeEscrow, FakePurchaser
+    from cardano_card.store import Store
+    store = Store(str(tmp_path / "jobs.db"))
+    inner = create_app(engine=Engine(store, FakeEscrow(store), FakePurchaser(store)), token="t" * 32, background=False, frontend=False)
+    app = PathPrefixes(inner, ["/v2"])
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            async with inner.router.lifespan_context(inner):
+                plain = (await client.get("/availability")).json()
+                prefixed = (await client.get("/v2/availability")).json()
+                assert plain == prefixed and prefixed["status"] == "available"
+                assert (await client.get("/v2/input_schema")).status_code == 200
+                assert (await client.get("/v2")).status_code in (200, 404)  # bare prefix maps to "/"
+                assert (await client.get("/v2jobs")).status_code == 404  # no partial-prefix matches
+    finally:
+        store.close()
+
+
+async def test_start_job_response_matches_sokosumi_paid_schema(tmp_path):
+    from cardano_card.api import create_app
+    from cardano_card.engine import Engine
+    from cardano_card.providers import FakeEscrow, FakePurchaser
+    from cardano_card.store import Store
+    store = Store(str(tmp_path / "jobs.db"))
+    app = create_app(engine=Engine(store, FakeEscrow(store), FakePurchaser(store)), token="t" * 32, background=False, frontend=False, public_jobs=True)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            async with app.router.lifespan_context(app):
+                payload = {"identifier_from_purchaser": "d" * 26, "input_data": {
+                    "ask": "Buy a sample", "max_total_usd": "10.00", "street": "1 St", "city": "X", "state": "CA",
+                    "zip": "00000", "phone": "+12025550123", "name": "Demo"}}
+                d = (await client.post("/start_job", json=payload)).json()
+                # Sokosumi (packages/masumi/src/schemas/agent/start_job.schema.ts) requires these names/types
+                for key in ("id", "input_hash", "identifierFromPurchaser", "blockchainIdentifier", "payByTime",
+                            "submitResultTime", "unlockTime", "externalDisputeUnlockTime", "agentIdentifier", "sellerVKey"):
+                    assert d.get(key) not in (None, ""), key
+                assert all(isinstance(d[k], int) for k in ("payByTime", "submitResultTime", "unlockTime", "externalDisputeUnlockTime"))
+                assert d["input_hash"] == d["inputHash"] and 0 <= d["supportedPaymentSourceIndex"] <= 24
+                diag = await client.get("/diagnostics", headers={"Authorization": "Bearer " + "t" * 32})
+                assert diag.status_code == 200 and diag.json()["jobs"] == 1
+                assert (await client.get("/diagnostics")).status_code == 401
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("ident,ok", [("a" * 14, True), ("b" * 26, True), ("c" * 13, False), ("d" * 27, False), ("G" * 20, False)])
+def test_purchaser_identifier_accepts_masumi_hex_nonce_range(ident, ok):
+    from pydantic import ValidationError
+    from cardano_card.models import StartRequest
+    data = {"identifier_from_purchaser": ident, "input_data": {"ask": "x", "max_total_usd": "1.00", "street": "1 St",
+            "city": "X", "state": "CA", "zip": "00000", "phone": "+12025550123", "name": "Demo"}}
+    if ok:
+        StartRequest.model_validate(data)
+    else:
+        with pytest.raises(ValidationError):
+            StartRequest.model_validate(data)

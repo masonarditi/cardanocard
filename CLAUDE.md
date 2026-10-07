@@ -67,6 +67,20 @@ Auto-approval: https://docs.agentcard.sh/vault/app-auto-approval.md
 - [x] Integrated with Ezra's agent: `PURCHASE_BACKEND=mason` (masumi `ModulePurchaser`) loads `agentcard/purchase.py`.
       Sandbox + fake escrow run passed 2026-10-06: job funded → real $12.41 cart → `sandbox_mode` → refunded (~50s)
 
+- [x] 2026-10-06 (Ezra's session) hardened `purchase.py` without changing the contract signature: `failed` is now
+      returned only when Agentcard says nothing was charged (`charge_status: "none"`, or `sandbox_mode` /
+      approval declines). A missing/settling checkout, `partially_placed`, a 409 without a cart, a missing
+      ledger record or an unreadable ledger all return `pending` (engine reconciles; never refunds). Ledger
+      writes are atomic. `agentcard.py` refreshes tokens atomically under the same lockfile + pending marker as
+      masumi's `SandboxTransport`. Offline tests: `agentcard/tests/test_purchase_v1.py`.
+- [x] 2026-10-07 `purchase_v2.py`: `confirmed` no longer requires the invented ledger status `settled` — any done
+      status (`placed`, `settled`, `completed`, …) or a captured/authorized `charge_status` confirms; `total_cents` is
+      coerced (int-valued float/str) and falls back to the quote estimate; a dead order is `failed_no_purchase` only
+      with `charge_status: none`; carts whose ceiling exceeds the $50 card limit are refused at prepare (no escrow);
+      any HTTP error after a confirm is resolved from the conversation. `staged_acceptance` stops on `awaiting_input`,
+      requires `--exclusive-handoff` + credential files for sandbox/live, and has a console script. Review notes:
+      `masumi/docs/MASON_V2_REVIEW.md`.
+
 ### Open decisions
 - Keep `CARD_LIMIT_USD` at $50: auto-approval covered a $12.06 ceiling despite its $10 limit, and every cart's ceiling
   is ~subtotal + $11, so a $10 cap would block everything. Keep demo purchases cheap (< $10 subtotal).
@@ -121,8 +135,12 @@ Ezra's fake and replay backends are unchanged. 115 tests pass.
   (the real gum order didn't return that).
 
 ### Agentcard credentials
-`agentcard/.env` + `.agentcard_tokens.json` (sandbox, user `usr_31f5c35616a38795b45ea5ec`) and `.env.prod` +
-`.agentcard_tokens.prod.json` (prod, user `usr_f9fe7033a2dc8fe3896baeb1`). Never committed; currently on Mason's machine.
+`agentcard/.env` + `.agentcard_tokens.json` (sandbox) and `.env.prod` + `.agentcard_tokens.prod.json` (prod). Never
+committed. 2026-10-07 on Ezra's machine: sandbox org creds + a freshly linked sandbox user `usr_3c01d0a5a6658878e2419eae`
+(linked via `/connect/start` + fixed sandbox code 111111; no card needed, confirm returns `sandbox_mode`); prod org
+creds in `.env.prod` (same as `masumi/.env`) but **no prod user token** — that needs Mason's phone code
+(`setup_vault.py --connect <Mason's phone>` with `AGENTCARD_ENV=prod`) and means his machine stops using its copy.
+Mason's machine still holds sandbox user `usr_31f5c356…` and prod user `usr_f9fe7033…` (the real card).
 Refresh tokens are single-use: only ONE machine may use a token file. Hand it over explicitly and stop using
 the old copy. If a refresh fails with `invalid_refresh_token`, re-link with `setup_vault.py --connect <Mason's phone>`
 (sandbox code 111111) and check the user id (prod must stay `usr_f9fe…`, which has the real card).
@@ -145,12 +163,27 @@ Mason's end-to-end runs (from `masumi/`, one database per case):
 payment creation (node minimums), refunds in minutes.
 
 ### What's left (Masumi side)
-1. Fund the Preprod selling and buying wallets (manual faucet; the faucet API key was rejected).
-2. Expose the agent publicly (tunnel) and register it on Preprod. Set `CARDANO_CARD_MODE=preprod`,
-   `MASUMI_V1_COMPATIBLE=true`, `PAYMENT_SERVICE_URL`, `PAYMENT_API_KEY`, `AGENT_IDENTIFIER`, `SELLER_VKEY`.
-3. Prove escrow → payout and escrow → refund on Preprod with `PURCHASE_BACKEND=fake`.
-4. `PURCHASE_BACKEND=mason` on Preprod: sandbox decline → refund, then `AGENTCARD_ENV=prod` cheap real order → payout.
-   Record tx hashes and order ids for the demo.
+1. ~~Fund the Preprod wallets~~ done (Ezra's node, 2026-10-06).
+2. ~~Register on Preprod~~ done: "Cardano Card Preprod" `cmuwcob4i001dry7mj91qzkcn`, loopback URL. Public exposure is
+   still only the jobs-disabled Railway endpoint (`hosted_api.py`); see `masumi/docs/HOSTED_REGISTRATION.md`.
+3. ~~Escrow → payout and escrow → refund on Preprod with simulated purchasing~~ **PASSED 2026-10-06, independently
+   verified via Blockfrost** (`cardano_card.acceptance --case payout|refund`):
+   - payout job `e1ff3dd2…`: fund `6490cc0e…4f901f8` → result `a8512d96…dd80f36d` → payout `59debcb2…33381de0`
+   - refund job `d2053b79…`: fund `8af76229…553114f6` → request `e018be24…d56e60b2a` → refund `d7a7d824…7cbf651e`
+     (buyer got 9.52 test ADA back; node 0.22 collects a no-result refund automatically after `submitResultTime`,
+     `authorize-refund` is only for disputes — the engine now waits instead of calling it)
+4. `PURCHASE_BACKEND=mason` on Preprod (`acceptance --case mason-sandbox-refund`, then `mason-payout`; commands in
+   `masumi/docs/PREPROD_ACCEPTANCE.md`). Blocked only on Agentcard credentials: Ezra's machine has none, and
+   `masumi/.env`'s client credentials are **production** (`sandbox: false`), so they must not be used for the sandbox
+   case. Needs Mason's sandbox `.env` + token file handed over exclusively, or Mason runs it on his machine.
+- Hosted runtime (2026-10-07): Railway runs the real agent via Masumi's hosted payment service (V2 rail,
+  `CARDANO_CARD_MODE=hosted`, public MIP-003 routes) with Agentcard **sandbox** purchasing. Two SaaS agents: the
+  original Dynamic one (`…1c38c6000000`, root URL; Sokosumi never lists Dynamic agents) and **"Cardano Card"**, Fixed
+  20 ADA, URL `/v2` (`…d06e8c000000`) — the one Railway serves. Each SaaS agent has its own selling wallet (Fixed
+  agent: `79e95441…`); never use the registry record's `SmartContractWallet` as `SELLER_VKEY`. See
+  `masumi/docs/HOSTED_RUNTIME.md`.
+- Chain evidence: NOWNodes Preprod (`NOWNODES_API_KEY` in `masumi/infra/masumi/.env`, default when set) or Blockfrost
+  (`BLOCKFROST_API_KEY_PREPROD`); `CHAIN_PROVIDER` forces one. Verifier requires `genesis.network_magic == 1`.
 - Docs: https://www.masumi.network/dev/masumi/core-concepts/payments and .../refunds-and-disputes
 
 ## Rules

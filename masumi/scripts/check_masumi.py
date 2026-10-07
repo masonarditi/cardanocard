@@ -11,13 +11,15 @@ root = Path(__file__).resolve().parents[1]
 path = root / "infra/masumi/.env"
 values = dotenv_values(path) if path.exists() else {}
 ready = True
-for key in ("POSTGRES_PASSWORD", "ADMIN_KEY", "ENCRYPTION_KEY", "BLOCKFROST_API_KEY_PREPROD"):
+for key in ("POSTGRES_PASSWORD", "ADMIN_KEY", "ENCRYPTION_KEY"):
     present = bool(values.get(key))
     ready &= present
     print(f"{key}: {'set' if present else 'missing'}")
+chain_ok = bool(values.get("NOWNODES_API_KEY")) or values.get("BLOCKFROST_API_KEY_PREPROD", "").startswith("preprod")
+print(f"chain evidence provider: {'NOWNodes (ada-testnet)' if values.get('NOWNODES_API_KEY') else 'Blockfrost Preprod' if chain_ok else 'missing'}")
 if values.get("BLOCKFROST_API_KEY_PREPROD") and not values["BLOCKFROST_API_KEY_PREPROD"].startswith("preprod"):
     print("Blockfrost key does not have the expected Preprod prefix; check its project network.")
-    ready = False
+ready &= chain_ok
 try:
     result = subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, timeout=15)
     running = result.returncode == 0

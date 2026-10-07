@@ -1,11 +1,14 @@
 """Resumable local Preprod acceptance. Every payment requires --execute.
 
 Payout uses a simulated purchase; sandbox-refund uses guarded AgentCard sandbox.
+mason-sandbox-refund and mason-payout run Mason's agentcard/purchase.py (the PURCHASE_BACKEND=mason path):
+sandbox must end in sandbox_mode -> refund; mason-payout spends the real card and needs --allow-real-card.
 Node completion and independent settlement verification are separate outcomes.
 """
 import argparse
 import asyncio
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -16,6 +19,8 @@ import httpx
 from dotenv import dotenv_values
 
 from .agentcard_bridge import AgentCardPurchaser, ReplayTransport
+from .chain_evidence import chain_client, chain_credential_ok, chain_provider
+from .providers import ModulePurchaser
 from .engine import Engine
 from .event_output import event_line, safe
 from .masumi_adapter import MasumiEscrow
@@ -24,11 +29,17 @@ from .preprod_buyer import PreprodBuyer, loopback_url
 from .sandbox_transport import SandboxTransport, private_json, readiness
 from .store import Store
 
-CASES = {"payout", "refund", "sandbox-refund"}
+CASES = {"payout", "refund", "sandbox-refund", "mason-sandbox-refund", "mason-payout"}
+REAL_PURCHASE = {"sandbox-refund", "mason-sandbox-refund", "mason-payout"}
+PAYOUT_CASES = {"payout", "mason-payout"}
 STOP_PHASES = {"paid", "refunded", "manual_review", "awaiting_input", "payment_creation_unknown"}
 REQUIRED = ("PAYMENT_SERVICE_URL", "PAYMENT_API_KEY", "BUYER_PAYMENT_SERVICE_URL",
             "BUYER_PAYMENT_API_KEY", "AGENT_IDENTIFIER", "SELLER_VKEY", "BUYER_VKEY",
             "MASUMI_FEE_LOVELACE", "MASUMI_CONTRACT_ADDRESS", "BUYER_ADDRESS", "SELLER_ADDRESS", "PAYOUT_ADDRESS")
+
+
+class FundingNeedsReconciliation(Exception):
+    """No matching buyer record exists after an unconfirmed funding attempt."""
 
 
 def assert_sandbox_reconciled(path):
@@ -84,7 +95,7 @@ class AcceptanceRunner:
     def __init__(self, engine, buyer, *, case, identity, observe_buyer):
         if case not in CASES or engine.escrow.simulated:
             raise ValueError("Acceptance requires a named case and real Preprod escrow")
-        if engine.purchaser.simulated != (case != "sandbox-refund"):
+        if engine.purchaser.simulated != (case not in REAL_PURCHASE):
             raise ValueError("Purchase mode does not match the acceptance case")
         self.engine, self.buyer, self.store = engine, buyer, engine.store
         self.case, self.identity, self.observe_buyer = case, identity, observe_buyer
@@ -124,6 +135,9 @@ class AcceptanceRunner:
         # Confirm buyer identity before the coordinator may invoke purchasing.
         observed = await self.observe_buyer(job)
         if observed is None:
+            attempt = self.buyer.store.get("buyer_writes", "fund:" + job_id)
+            if attempt and attempt["state"] == "unknown":
+                raise FundingNeedsReconciliation()
             return job
         self.store.put("acceptance_buyer_observations", job_id, observed)
         transactions = {r["tx_hash"]: r for r in job.get("chain_transactions", [])}
@@ -138,17 +152,34 @@ class AcceptanceRunner:
             await self.buyer.refund(job_id, self.engine.public(job))
         return self.engine.get(job_id)
 
+    def mason_reason(self, job):
+        """Mason's saved failure reason (normalize drops it). Read-only; nothing is confirmed or sent."""
+        outcome = job.get("outcome") or {}
+        module = getattr(self.engine.purchaser, "module", None)
+        if outcome.get("status") != "failed" or module is None:
+            return None
+        try:
+            raw = module.inspect_purchase(job["id"])
+        except Exception:
+            return None
+        return raw.get("reason") if isinstance(raw, dict) and raw.get("status") == "failed" else None
+
     def evidence(self, job, chain=None):
         result = self.engine.evidence(job)
         record = self.store.get("agentcard_purchases", job["id"]) or {}
-        expected = "paid" if self.case == "payout" else "refunded"
-        scenario_matched = (self.case != "sandbox-refund" or record.get("provider_reason") == "sandbox_mode")
+        expected = "paid" if self.case in PAYOUT_CASES else "refunded"
+        outcome = job.get("outcome") or {}
+        scenario_matched = {
+            "sandbox-refund": record.get("provider_reason") == "sandbox_mode",
+            "mason-sandbox-refund": self.mason_reason(job) == "sandbox_mode",
+            "mason-payout": outcome.get("status") == "success" and not str(outcome.get("order_id", "")).startswith("SIM-"),
+        }.get(self.case, True)
         node_complete = job["phase"] == expected and scenario_matched
         proof = chain or {"settlement_verified": False, "limitations": ["Independent verification not yet run"]}
-        expected_kind = "payout" if self.case == "payout" else "refund"
+        expected_kind = "payout" if self.case in PAYOUT_CASES else "refund"
         verified = (proof.get("settlement_verified") is True and proof.get("settlement_kind") == expected_kind
                     and proof.get("funding_verified") is True
-                    and (self.case != "payout" or proof.get("result_verified") is True))
+                    and (self.case not in PAYOUT_CASES or proof.get("result_verified") is True))
         result.update(case=self.case, node_complete=node_complete,
             acceptance_passed=node_complete and verified,
             independent_chain_evidence=proof,
@@ -159,12 +190,30 @@ class AcceptanceRunner:
         return result
 
 
+def check_mason_case(args, environ):
+    """Mason's module picks sandbox or production from AGENTCARD_ENV at import time; bind it to the case."""
+    prod = environ.get("AGENTCARD_ENV") == "prod"
+    if args.case == "mason-payout" and not (prod and args.allow_real_card):
+        raise ValueError("mason-payout spends the real card: set AGENTCARD_ENV=prod and pass --allow-real-card")
+    if args.case == "mason-sandbox-refund" and prod:
+        raise ValueError("mason-sandbox-refund must not run with AGENTCARD_ENV=prod")
+    if not args.exclusive_handoff:
+        raise ValueError("Refresh tokens are single-use: confirm the exclusive AgentCard handoff (--exclusive-handoff)")
+    directory = Path(args.agentcard_dir)
+    suffix = ".prod" if prod else ""
+    missing = [name for name in (".env" + suffix, ".agentcard_tokens" + suffix + ".json") if not (directory / name).exists()]
+    if missing or not (directory / "purchase.py").exists():
+        raise ValueError("Mason module, credentials or linked user tokens are missing: " + ", ".join(missing or ["purchase.py"]))
+
+
 def configuration(args):
     # Explicit files prevent inherited production variables overriding this runner.
     settings = dict(dotenv_values(args.env))
     infra = dict(dotenv_values(args.node_env))
     missing = [name for name in REQUIRED if not settings.get(name)]
-    missing += [] if infra.get("BLOCKFROST_API_KEY_PREPROD", "").startswith("preprod") else ["BLOCKFROST_API_KEY_PREPROD"]
+    provider, credential = chain_provider(infra)
+    if not chain_credential_ok(provider, credential):
+        missing.append("NOWNODES_API_KEY" if provider == "nownodes" else "BLOCKFROST_API_KEY_PREPROD")
     return settings, infra, missing
 
 
@@ -176,9 +225,10 @@ async def preflight(settings, infra, store):
     if settings.get("NETWORK") != "Preprod" or not 0 < int(settings["MASUMI_FEE_LOVELACE"]) <= 10_000_000:
         raise ValueError("Acceptance is limited to Preprod and at most 10 test ADA per job")
     async with httpx.AsyncClient(base_url=seller_url + "/", headers={"token": infra.get("ADMIN_KEY", "")}, timeout=30) as node, \
-            httpx.AsyncClient(base_url="https://cardano-preprod.blockfrost.io/api/v0/", headers={"project_id": infra["BLOCKFROST_API_KEY_PREPROD"]}, timeout=30) as chain:
+            chain_client(infra) as chain:
         if settings["PAYMENT_API_KEY"] == settings["BUYER_PAYMENT_API_KEY"]:
             raise ValueError("Buyer and seller must use separate capped Preprod keys")
+        buyer_credits = None
         for key in ("PAYMENT_API_KEY", "BUYER_PAYMENT_API_KEY"):
             response = await node.get("api-key-status/", headers={"token": settings[key]})
             response.raise_for_status()
@@ -187,8 +237,11 @@ async def preflight(settings, infra, store):
             if (envelope.get("status") != "success" or auth.get("permission") != "ReadAndPay" or
                     auth.get("networkLimit") != ["Preprod"] or auth.get("usageLimited") is not True or auth.get("status") != "Active"):
                 raise ValueError("Runtime keys must be active, capped and restricted to Preprod")
+            if key == "BUYER_PAYMENT_API_KEY":
+                buyer_credits = auth.get("RemainingUsageCredits")
         snapshot = await PreprodSetup(store, node, chain, identity=seller_url).inspect(
             seller_vkey=settings["SELLER_VKEY"], buyer_vkey=settings["BUYER_VKEY"])
+        snapshot["buyer_usage_credits"] = buyer_credits
     # The final schema for the setup snapshot is validated here, never guessed.
     return snapshot
 
@@ -200,7 +253,8 @@ async def run(args):
           "+----------------------------------------------------------+")
     print("PREPROD ACCEPTANCE | " + args.case + " | " + ("EXECUTE" if args.execute else "PREFLIGHT"))
     print("ESCROW | " + ("Real test ADA" if args.execute else "No provider calls") +
-          " | PURCHASE | " + ("AgentCard sandbox" if args.case == "sandbox-refund" else "Simulated"))
+          " | PURCHASE | " + {"sandbox-refund": "AgentCard sandbox", "mason-sandbox-refund": "Mason module / AgentCard sandbox",
+                               "mason-payout": "Mason module / REAL CARD"}.get(args.case, "Simulated"))
     if missing:
         print("BLOCKED | configure: " + ", ".join(missing))
         return 2
@@ -215,6 +269,8 @@ async def run(args):
         assert_sandbox_reconciled(args.prior_sandbox_db)
         if not all(readiness(Path(args.agentcard_dir))[k] for k in ("sandbox_credentials", "linked_user_tokens")):
             raise ValueError("Matching sandbox credentials and current user tokens are missing")
+    if args.case.startswith("mason-"):
+        check_mason_case(args, os.environ)
     request = StartRequest(identifier_from_purchaser=args.request_id, input_data=json.loads(Path(args.request).read_text()))
     store = Store(args.database or "data/acceptance-" + args.case + ".db")
     transport = None
@@ -225,12 +281,17 @@ async def run(args):
         validate_preflight(snapshot, settings, require_funding=not bool(funded_attempt))
         escrow = MasumiEscrow(settings["PAYMENT_SERVICE_URL"], settings["PAYMENT_API_KEY"], settings["AGENT_IDENTIFIER"], settings["SELLER_VKEY"],
                               payout_address=settings["PAYOUT_ADDRESS"])
-        if args.case == "sandbox-refund":
-            transport = SandboxTransport(Path(args.agentcard_dir), exclusive_until=time.time() + min(args.timeout, 1800))
-            await transport.verify_sandbox()
+        if args.case.startswith("mason-"):
+            sys.path.insert(0, str(Path(args.agentcard_dir).resolve()))
+            purchaser = ModulePurchaser("purchase")
         else:
-            transport = ReplayTransport(store, "success" if args.case == "payout" else "declined")
-        engine = Engine(store, escrow, AgentCardPurchaser(store, transport))
+            if args.case == "sandbox-refund":
+                transport = SandboxTransport(Path(args.agentcard_dir), exclusive_until=time.time() + min(args.timeout, 1800))
+                await transport.verify_sandbox()
+            else:
+                transport = ReplayTransport(store, "success" if args.case == "payout" else "declined")
+            purchaser = AgentCardPurchaser(store, transport)
+        engine = Engine(store, escrow, purchaser)
         store.event_sink = lambda event: print(event_line(event, ascii_only=args.ascii), flush=True)
         identity = digest({name: settings[name] for name in REQUIRED})
         async with httpx.AsyncClient(base_url=loopback_url(settings["BUYER_PAYMENT_SERVICE_URL"]) + "/",
@@ -245,6 +306,12 @@ async def run(args):
             while job["phase"] not in STOP_PHASES and time.monotonic() < deadline:
                 try:
                     job = await runner.step(job["id"])
+                except FundingNeedsReconciliation:
+                    attempt = store.get("buyer_writes", "fund:" + job["id"])
+                    print("BLOCKED | funding unconfirmed; buyer record absent | HTTP " +
+                          str(attempt.get("http_status", "unavailable")) +
+                          " | reconcile this job before another payment", flush=True)
+                    break
                 except ValueError:
                     raise
                 except Exception:
@@ -257,8 +324,9 @@ async def run(args):
                 if job["phase"] not in STOP_PHASES:
                     await asyncio.sleep(args.poll_seconds)
             job = engine.get(job["id"])
-            from .chain_evidence import BlockfrostEvidence
-            verifier = BlockfrostEvidence(infra["BLOCKFROST_API_KEY_PREPROD"])
+            from .chain_evidence import BlockfrostEvidence  # late import: tests substitute the verifier
+            provider, credential = chain_provider(infra)
+            verifier = BlockfrostEvidence(credential, provider=provider)
             try:
                 proof = await verifier.verify(job, buyer_vkey=settings["BUYER_VKEY"], seller_vkey=settings["SELLER_VKEY"],
                     buyer_address=settings["BUYER_ADDRESS"], seller_address=settings["SELLER_ADDRESS"],
@@ -284,6 +352,12 @@ async def run(args):
 
 def validate_preflight(snapshot, settings, *, require_funding=True):
     """Require current schema, wallet funding and matching confirmed registration."""
+    if require_funding:
+        credits = snapshot.get("buyer_usage_credits")
+        if (not isinstance(credits, list) or
+                sum(int(item["amount"]) for item in credits if item.get("unit") in {"", "lovelace"})
+                < int(settings["MASUMI_FEE_LOVELACE"])):
+            raise ValueError("Buyer API key has insufficient usage credits; no new job was created")
     if snapshot.get("schema_verified") is not True or snapshot.get("contract_address") != settings["MASUMI_CONTRACT_ADDRESS"]:
         raise ValueError("Live node schema or contract does not match configured Preprod")
     # Setup and runner use the same explicit fixed-fee registry entry.
@@ -322,6 +396,7 @@ def main():
     parser.add_argument("--agentcard-dir", default="../agentcard")
     parser.add_argument("--prior-sandbox-db", default="data/agentcard-sandbox.db")
     parser.add_argument("--exclusive-handoff", action="store_true")
+    parser.add_argument("--allow-real-card", action="store_true", help="Required for mason-payout (real merchant order)")
     parser.add_argument("--evidence-dir", default="work/preprod-evidence")
     parser.add_argument("--timeout", type=float, default=60)
     parser.add_argument("--poll-seconds", type=float, default=5)

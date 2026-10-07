@@ -14,6 +14,9 @@ from .chain_evidence import _address_bytes
 
 
 class MasumiEscrow:
+    # Pinned V1 collects no-result refunds after submitResultTime + its buffer.
+    # authorize-refund is only valid for Disputed payments.
+    automatic_requested_refund = True
     simulated = False
 
     def __init__(self, url, api_key, agent_identifier, seller_vkey, payout_address=None):

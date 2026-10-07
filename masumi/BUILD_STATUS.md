@@ -1,8 +1,40 @@
 # Integration build status — 6 October 2026
 
+## Hosted runtime live on Preprod (7 October 2026)
+
+The Railway service now runs the real agent against Masumi's **hosted** payment service (Web3CardanoV2, no local node):
+`POST /start_job` on https://cardanocard-preprod-production.up.railway.app creates a real Preprod escrow request and
+returns MIP-003 terms; `/status` polls it; operator routes stay token-gated. Purchasing is simulated until Mason's
+Agentcard credentials are placed on Railway. Buyer side still needs Sokosumi Preprod or a ≥0.28 payment service
+(the SaaS key cannot purchase; our local node is V1-only). Details: [HOSTED_RUNTIME.md](docs/HOSTED_RUNTIME.md).
+
+## Hosted registration deployment (historical)
+
+Railway deployment `031ec0b3-874f-41ef-bca0-c363995476e8` succeeded in eztramble's Projects. Public health and schema are verified at https://cardanocard-preprod-production.up.railway.app. This endpoint explicitly disables jobs; it has no payment/card credentials or connection to the private local runtime. Masumi accepted hosted Preprod agent `544fcfcd-29e5-4453-9a04-ac6554956d56` under ezzycoin. Both SaaS and registry remain RegistrationRequested, with no transaction, agent identifier or processing timestamp. Canonical registry pricing is correctly Dynamic; only the SaaS copy displays Free. The completion API's funding message is generic, although independent Blockfrost checks found no history for either hosted registration wallet. Do not fund or recreate the registration blindly. The read-only readiness CLI verifies identity/payout/source/pricing and distinguishes registration from execution readiness. **341 tests pass.** See [hosted registration](docs/HOSTED_REGISTRATION.md), the [V2 implementation checklist](docs/HOSTED_V2_PLAN.md), and the [unsent support note](docs/MASUMI_REGISTRATION_SUPPORT.md).
+
+## Live Preprod acceptance — PASSED (6 October 2026, ~20:45 SGT)
+
+Both simulated-purchase cases completed on real Preprod escrow and were verified independently through Blockfrost
+(`proof_scope: indexed_unbatched_ada_settlement`, funding + result + payout/refund bound to the exact datum, redeemer, addresses and value flow).
+
+| case | job | funding tx | step tx | settlement tx |
+|---|---|---|---|---|
+| payout (`paid`) | `e1ff3dd2-c471-444f-9914-b7c6eff49ecb` | `6490cc0edd130efb494ca30c7c4871f3394127401272d9f1bf6f883cb4f901f8` | result `a8512d964f62a783811e9cd5801b037c8e4704b1799c6ef62fb62974dd80f36d` | payout `59debcb26d3909375491b07b8926e9c95bf5e47ae436c313dc68336f33381de0` (8.56 test ADA to the payout wallet) |
+| refund (`refunded`) | `d2053b79-baed-4e54-9dcc-7ab90255b212` | `8af76229a5bd3aab65e1427085a70f9dfcb216139a9f2c8b355e0ed4553114f6` | refund request `e018be24bbf528d22d0aa0de56823a4bf3cf06399b11f7fbe789554d56e60b2a` | refund `d7a7d824ea9faaed063c5af10a6942d9d5177b1f468cea05faf71aa57cbf651e` (9.52 test ADA back to the buyer) |
+
+Evidence: `work/preprod-evidence/<job>.json` (private). Payout landed ~47 minutes after payment creation; the refund was
+collected by the node ~11 minutes after `submitResultTime`. Two findings from these runs are fixed in code: the node
+rejects `authorize-refund` for a non-disputed payment (refunds auto-collect; engine now waits in `refund_due`), and the
+strict verifier rejected real wallet change that carried a test token (now requires per-asset conservation instead).
+Both local HTTP flows (fake backend: success → paid, declined → refunded; staged_fake: success, declined, over_budget → quote_rejected) also pass end to end. **382 masumi + 52 agentcard tests pass.**
+
+Chain evidence provider: NOWNodes Cardano Preprod (`ada-testnet.nownodes.io`, Blockfrost-compatible) is integrated as the default when its key is configured, with Blockfrost as fallback. Verified 2026-10-07 against Blockfrost: identical `genesis` (network_magic 1), same tip, and identical tx/utxo/redeemer/datum payloads for all four settlement transactions above; both PASS evidences were re-verified through NOWNodes.
+
+Still unproven: a real Agentcard checkout on Preprod escrow (`mason-sandbox-refund`, `mason-payout`) — needs Mason's credentials; see CLAUDE.md "What's left".
+
 ## Current stage
 
-The local integration and Preprod acceptance tooling are implemented. The staged quote/approval/Vault boundary is implemented and both local terminal rehearsal paths pass. Wallet funding and on-chain registration are confirmed; real escrow payout/refund acceptance remains to be executed. No real escrow payout/refund, merchant order from this iteration or completed sandbox confirmation has been demonstrated.
+The local integration and Preprod acceptance tooling are implemented and the escrow payout/refund legs are proven live (above). The staged quote/approval/Vault boundary is implemented and both local terminal rehearsal paths pass. Wallet funding and on-chain registration are confirmed; real escrow payout/refund acceptance remains to be executed. No real escrow payout/refund, merchant order from this iteration or completed sandbox confirmation has been demonstrated.
 
 Work is in `masonarditi/cardanocard`, branch `ezra`, under `masumi/`. The archived `cardano-card` directory is reference only. The new workspace has its own virtual environment and restored private integration configuration. Existing node containers and their encrypted database volume were preserved. AgentCard credentials and rotating user tokens were deliberately not copied into the new clone.
 
@@ -20,7 +52,15 @@ Work is in `masonarditi/cardanocard`, branch `ezra`, under `masumi/`. The archiv
 
 ## Verification and environment
 
-**324 automated tests pass** in the new workspace; it includes mocked node/AgentCard HTTP responses and synthetic chain fixtures. These tests do not substitute for live settlement evidence. Dependency checks pass and package imports resolve to the new clone.
+**347 automated tests pass** in the new workspace; these include mocked node/AgentCard HTTP responses and synthetic chain fixtures. These tests do not substitute for live settlement evidence. Dependency checks pass and package imports resolve to the new clone.
+
+### October 6 chain diagnosis
+
+The current `ezra` HEAD matches fetched `origin/main` at `b70af9b`; local changes remain uncommitted. Live preflight passed: reviewed schema, confirmed registration, fixed fee, wallet identities, collection destination and separate restricted keys. Blockfrost reported epoch 317, protocol 11, and a latest block 42 seconds old. Both installed serializer files match the patch manifest and current cost models are unchanged. Buyer: 105 test ADA; seller: 314.749890; payout: zero. Private evidence: `work/chain-diagnosis-20261006.json`.
+
+The first real payout attempt received HTTP 400. The pinned fixed-price V1 endpoint explicitly rejects the `Amounts` field our buyer supplied. The buyer now omits that field while retaining the exact budget check. HTTP status and safe diagnostic categories persist without provider bodies; unknown writes remain non-retryable. Acceptance stops for reconciliation, saving incomplete evidence, when funding is unconfirmed and no buyer record exists. Six regression cases cover the fixed-price contract, private durable error diagnostics and preventing checkout after absent funding.
+
+Read-only reconciliation of job `e5ff93ac-3c3f-451a-87e9-c938ee59f2c8` found buyer HTTP 404, no seller current transaction or transaction history, and unchanged balances. No funding or settlement is recorded. Original deadlines expired; do not replay its payload. Real payout/refund acceptance still needs fresh, separately recorded cases after reconciliation. No new funds or merchant purchases were initiated during diagnosis.
 
 Read-only checks confirm the local Masumi Payment Service and PostgreSQL are running. Its 0.22.0 OpenAPI matches the pinned source fingerprint. The reviewed SDK is 1.2.0. One Preprod purchasing wallet and one selling wallet exist; the latest read-only check reports **105 test ADA in the buyer wallet and 314.749890 test ADA in the seller wallet after registration**. Cardano Card Preprod registration is confirmed and independently verified through Blockfrost. Separate capped buyer/seller keys and the agent identity are saved in ignored `.env.preprod` (0600). Schema compatibility is a wire-format gate, not settlement proof.
 

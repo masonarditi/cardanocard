@@ -3,7 +3,7 @@ import copy
 import httpx
 import pytest
 
-from cardano_card.chain_evidence import BlockfrostEvidence, PREPROD_URL
+from cardano_card.chain_evidence import BlockfrostEvidence, NOWNODES_URL, PREPROD_URL, chain_credential_ok, chain_provider
 
 TX, TX2, BLOCK, DATUM = 'a' * 64, 'b' * 64, 'c' * 64, 'd' * 64
 BUYER, SELLER = 'e' * 56, 'f' * 56
@@ -41,8 +41,11 @@ def utxo(address=CONTRACT, quantity='12000000', **extra):
             'collateral': False, 'reference': False, **extra}
 
 
+GENESIS = {'network_magic': 1}
+
+
 def responses(state=0):
-    return {f'txs/{TX}': {'hash': TX, 'block': BLOCK, 'block_height': 123, 'valid_contract': True},
+    return {'genesis': dict(GENESIS), f'txs/{TX}': {'hash': TX, 'block': BLOCK, 'block_height': 123, 'valid_contract': True},
         f'txs/{TX}/utxos': {'hash': TX, 'inputs': [], 'outputs': [utxo()]},
         f'scripts/datum/{DATUM}': {'json_value': datum(state)}}
 
@@ -54,7 +57,10 @@ async def verify(data, current_job=None, **kwargs):
         assert request.method == 'GET'
         assert request.headers['project_id'] == 'preprod-test'
         route = str(request.url)[len(PREPROD_URL):]
-        calls.append(route)
+        if route == 'genesis' and 'genesis' not in data:
+            return httpx.Response(200, json=GENESIS)  # every fixture is Preprod unless a test says otherwise
+        if route != 'genesis':
+            calls.append(route)
         response = data.get(route)
         if isinstance(response, Exception):
             raise response
@@ -376,6 +382,30 @@ async def test_ambiguous_or_invalid_economic_flow_cannot_pass(mutation):
     assert not result['settlement_verified']
 
 
+@pytest.mark.parametrize('kind', ['payout', 'refund'])
+async def test_native_tokens_in_wallet_change_are_allowed_when_conserved(kind):
+    # Real Preprod refund d7a7d824…: the buyer wallet input and change both carry a test token.
+    current, data, policy = strict_fixture(kind)
+    utxos = data[f'txs/{TX}/utxos']
+    wallet = REAL_SELLER if kind == 'payout' else REAL_BUYER
+    utxos['inputs'][0]['amount'].append({'unit': 'ab' * 28 + '01', 'quantity': '100'})
+    change = next(e for e in utxos['outputs'] if e['address'] == wallet)
+    change['amount'].append({'unit': 'ab' * 28 + '01', 'quantity': '100'})
+    result = await strict_verify(current, data, policy)
+    assert result['settlement_verified'] and result['settlement_kind'] == kind
+    change['amount'][-1]['quantity'] = '99'  # a token leaving to nowhere breaks conservation
+    assert not (await strict_verify(current, data, policy))['settlement_verified']
+
+
+@pytest.mark.parametrize('target', ['fee', 'collateral'])
+async def test_recipient_outputs_stay_ada_only(target):
+    current, data, policy = strict_fixture('payout')
+    utxos = data[f'txs/{TX}/utxos']
+    utxos['inputs'][0]['amount'].append({'unit': 'ab' * 28 + '01', 'quantity': '1'})
+    utxos['outputs'][2 if target == 'fee' else 1]['amount'].append({'unit': 'ab' * 28 + '01', 'quantity': '1'})
+    assert not (await strict_verify(current, data, policy))['settlement_verified']
+
+
 async def test_refund_can_be_verified_without_payout_policy():
     current, data, _ = strict_fixture('refund')
     result = await strict_verify(current, data, None)
@@ -515,3 +545,46 @@ async def test_refund_remains_bound_to_buyer_with_custom_payout_snapshot():
     result = await strict_verify(current, data, policy)
     assert result['settlement_verified'] and result['settlement_kind'] == 'refund'
     assert result['payout_address'] == COLLECTION
+
+
+async def test_verification_requires_preprod_genesis():
+    data = responses()
+    data['genesis'] = {'network_magic': 2}  # Preview
+    with pytest.raises(ValueError, match='Preprod'):
+        await verify(data)
+    data['genesis'] = 404
+    with pytest.raises(ValueError, match='Preprod'):
+        await verify(data)
+
+
+async def test_nownodes_provider_uses_root_path_and_api_key_header():
+    data, calls = responses(), []
+    def handle(request):
+        assert str(request.url).startswith(NOWNODES_URL) and '/api/v0/' not in str(request.url)
+        assert request.headers['api-key'] == 'nn-key' and 'project_id' not in request.headers
+        route = str(request.url)[len(NOWNODES_URL):]
+        calls.append(route)
+        value = data.get(route)
+        return httpx.Response(200, json=value) if value is not None else httpx.Response(404)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        result = await BlockfrostEvidence('nn-key', client=client, provider='nownodes').verify(
+            job(), buyer_vkey=BUYER, buyer_address=BUYER_ADDRESS)
+    assert calls[0] == 'genesis' and result['provider'] == 'nownodes'
+    assert result['funding_verified'] and result['transactions'][0]['reported_by'] == 'nownodes'
+
+
+def test_provider_selection_and_credentials():
+    assert chain_provider({'BLOCKFROST_API_KEY_PREPROD': 'preprodX'}) == ('blockfrost', 'preprodX')
+    assert chain_provider({'BLOCKFROST_API_KEY_PREPROD': 'preprodX', 'NOWNODES_API_KEY': 'k'}) == ('nownodes', 'k')
+    assert chain_provider({'CHAIN_PROVIDER': 'blockfrost', 'BLOCKFROST_API_KEY_PREPROD': 'preprodX', 'NOWNODES_API_KEY': 'k'}) == ('blockfrost', 'preprodX')
+    assert chain_provider({}) == ('blockfrost', '')
+    with pytest.raises(ValueError):
+        chain_provider({'CHAIN_PROVIDER': 'koios'})
+    with pytest.raises(ValueError, match='Preprod'):
+        chain_provider({'NOWNODES_API_KEY': 'k', 'NOWNODES_URL': 'https://ada.nownodes.io'})  # mainnet host
+    assert chain_credential_ok('nownodes', 'k') and not chain_credential_ok('nownodes', '')
+    assert chain_credential_ok('blockfrost', 'preprodX') and not chain_credential_ok('blockfrost', 'mainnetX')
+    with pytest.raises(ValueError, match='NOWNodes'):
+        BlockfrostEvidence('', provider='nownodes')
+    with pytest.raises(ValueError):
+        BlockfrostEvidence('k', provider='koios')

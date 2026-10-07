@@ -102,3 +102,30 @@ async def test_refund_requires_known_job_and_definitive_failure(buyer):
 def test_buyer_rejects_nonlocal_or_credential_urls(url):
     with pytest.raises(ValueError):
         loopback_url(url)
+
+
+async def test_fixed_price_wire_contract_omits_amounts(buyer):
+    async def fixed_price_node(route, json):
+        # Pinned Masumi V1 rejects this property even when the amount is correct.
+        status = 400 if 'Amounts' in json else 200
+        return httpx.Response(status, json={'status': 'error' if status == 400 else 'success'},
+                              request=httpx.Request('POST', 'http://localhost/purchase/'))
+    buyer.client.post = fixed_price_node
+    assert (await buyer.fund(PAYLOAD, terms()))['state'] == 'accepted_by_node'
+
+
+@pytest.mark.parametrize('status', [400, 401, 409, 500])
+async def test_http_failure_is_durable_private_and_never_retried(buyer, status):
+    calls = []
+    async def rejected(route, json):
+        calls.append(route)
+        return httpx.Response(status, json={'secret': 'must-not-be-persisted'},
+                              request=httpx.Request('POST', 'http://localhost/purchase/'))
+    buyer.client.post = rejected
+    first = await buyer.fund(PAYLOAD, terms())
+    assert first['state'] == 'unknown'
+    replacement = PreprodBuyer(buyer.store, buyer.client, 'expected-agent', 'expected-seller',
+                               lambda *_: 'expected-hash', 'buyer-identity')
+    assert await replacement.fund(PAYLOAD, terms()) == first
+    assert calls == ['/purchase/']
+    assert 'must-not-be-persisted' not in str(buyer.store.get('buyer_writes', 'fund:job'))

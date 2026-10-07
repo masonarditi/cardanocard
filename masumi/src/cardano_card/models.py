@@ -47,7 +47,8 @@ class PurchaseInput(BaseModel):
 
 class StartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    identifier_from_purchaser: str = Field(pattern=r"^[0-9a-f]{26}$")
+    # Masumi payment service: "a unique nonce from the purchaser, hex, 14-26 chars" (hosted /payment schema).
+    identifier_from_purchaser: str = Field(pattern=r"^[0-9a-f]{14,26}$")
     input_data: dict
 
     @field_validator("input_data")

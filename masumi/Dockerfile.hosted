@@ -1,0 +1,16 @@
+# Real Cardano Card runtime for Railway: Preprod escrow via Masumi's hosted payment service, no local node.
+# Secrets arrive as Railway variables; the job database lives on the attached volume (CARDANO_CARD_DB=/data/jobs.db).
+FROM python:3.12-slim
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY src ./src
+# Mason's Agentcard module (code only; credentials come from variables + the /data volume via AGENTCARD_HOME)
+COPY agentcard/*.py ./agentcard/
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir '.[masumi,agentcard]' && apt-get purge -y git && apt-get autoremove -y && mkdir -p /data
+# Railway mounts volumes root-owned; the process stays root so /data/jobs.db is writable.
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PORT=8080 CARDANO_CARD_HOST=0.0.0.0 CARDANO_CARD_MODE=hosted \
+    CARDANO_CARD_PUBLIC_JOBS=true CARDANO_CARD_FRONTEND=false CARDANO_CARD_LIVE_OUTPUT=true CARDANO_CARD_DB=/data/jobs.db \
+    AGENTCARD_DIR=/app/agentcard AGENTCARD_HOME=/data/agentcard
+EXPOSE 8080
+CMD ["python", "-m", "cardano_card.api"]

@@ -26,14 +26,26 @@ from .store import Store
 
 CASES = {"payout": ("success", "paid"), "refund": ("declined", "refunded"),
          "sandbox": ("sandbox", "refunded"), "live": ("prod", "paid")}
-STOP = {"paid", "refunded", "manual_review", "quote_rejected", "quote_expired", "payment_creation_unknown", "expired"}
+STOP = {"paid", "refunded", "manual_review", "quote_rejected", "quote_expired", "payment_creation_unknown", "expired",
+        "awaiting_input"}  # a vault approval needs a human; nothing here answers it
 AGENTCARD = Path(__file__).resolve().parents[3] / "agentcard"
 
 
-def purchase_module(case, store):
+def check_agentcard_files(directory, prod):
+    """Refresh tokens are single-use: the matching credentials and linked user tokens must be present here."""
+    suffix = ".prod" if prod else ""
+    missing = [n for n in (".env" + suffix, ".agentcard_tokens" + suffix + ".json") if not (Path(directory) / n).exists()]
+    if missing:
+        raise ValueError("Agentcard credentials or linked user tokens are missing: " + ", ".join(missing))
+
+
+def purchase_module(case, store, *, exclusive_handoff=False, agentcard_dir=None):
     mode = CASES[case][0]
     if mode in ("success", "declined"):
         return FakeStagedModule(store, mode)
+    if not exclusive_handoff:
+        raise ValueError("Confirm the exclusive Agentcard handoff (--exclusive-handoff); only one machine may hold the tokens")
+    check_agentcard_files(agentcard_dir or AGENTCARD, mode == "prod")
     os.environ["AGENTCARD_ENV"] = mode
     sys.path.insert(0, str(AGENTCARD))
     module = StagedModule("purchase_v2")
@@ -97,7 +109,7 @@ async def run(args):
         validate_preflight(snapshot, settings, require_funding=not (existing and existing.get("payment")))
         escrow = MasumiEscrow(settings["PAYMENT_SERVICE_URL"], settings["PAYMENT_API_KEY"], settings["AGENT_IDENTIFIER"],
                               settings["SELLER_VKEY"], payout_address=settings["PAYOUT_ADDRESS"])
-        engine = StagedEngine(store, escrow, purchase_module(args.case, store),
+        engine = StagedEngine(store, escrow, purchase_module(args.case, store, exclusive_handoff=args.exclusive_handoff),
                               escrow_lovelace=int(settings["MASUMI_FEE_LOVELACE"]), payout_address=settings["PAYOUT_ADDRESS"])
         store.event_sink = lambda event: print(event_line(event, ascii_only=args.ascii), flush=True)
         identity = digest({"case": args.case, "buyer": settings["BUYER_PAYMENT_SERVICE_URL"], "vkey": settings["BUYER_VKEY"]})
@@ -123,8 +135,12 @@ async def run(args):
                 if job["phase"] not in STOP:
                     await asyncio.sleep(args.poll_seconds)
             job = engine.get(job["id"])
-            from .chain_evidence import BlockfrostEvidence
-            verifier = BlockfrostEvidence(infra["BLOCKFROST_API_KEY_PREPROD"])
+            if job["phase"] == "awaiting_input":
+                print("STOPPED | vault approval required; approve on the phone, then rerun the same command to inspect",
+                      flush=True)
+            from .chain_evidence import BlockfrostEvidence, chain_provider
+            provider, credential = chain_provider(infra)
+            verifier = BlockfrostEvidence(credential, provider=provider)
             try:
                 proof = await verifier.verify(job, buyer_vkey=settings["BUYER_VKEY"], seller_vkey=settings["SELLER_VKEY"],
                     buyer_address=settings["BUYER_ADDRESS"], seller_address=settings["SELLER_ADDRESS"],
@@ -159,6 +175,7 @@ def main():
     parser.add_argument("--node-env", default="infra/masumi/.env")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--allow-real-card", action="store_true")
+    parser.add_argument("--exclusive-handoff", action="store_true", help="Required for sandbox/live: this machine alone holds the Agentcard tokens")
     parser.add_argument("--request")
     parser.add_argument("--request-id")
     parser.add_argument("--database")

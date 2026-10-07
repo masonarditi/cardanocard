@@ -48,6 +48,8 @@ Create an ignored `work/acceptance-input.json` containing the input object (`ask
 
 The runner verifies live registration, fixed fee, contract, wallet identity, schema and restricted API keys before creating a payment. New funding needs fee plus a buyer fee buffer and seller transaction funds. Resume after an existing funding attempt does not demand that original balance again. Buyer payment identity is checked before the coordinator may start purchasing. A timeout, crash or unknown payment response never triggers another funding POST.
 
+For fixed-price V1 agents the buyer validates the quoted fee locally and omits `Amounts` from the purchase request; the node reads pricing from registration and rejects that field. Failed requests retain a safe HTTP status in evidence. If funding is unconfirmed and the buyer record is absent, the runner stops with `BLOCKED` and saves `INCOMPLETE` evidence instead of waiting through settlement deadlines. An HTTP error or missing record alone is not authorization to repay: reconcile node records, transaction history and chain evidence first. Expired terms require a separately recorded new case after definitive reconciliation.
+
 The terminal prints durable lifecycle events plus a periodic waiting message. `--ascii` disables emoji. Stop with Ctrl-C and resume with the exact same command. Real contract deadlines remain in force: the current payout window begins roughly 36 minutes after payment creation, followed by processing and confirmations. A short CLI timeout does not cancel an escrow or purchase.
 
 ## AgentCard sandbox refund
@@ -62,10 +64,28 @@ Restore only the current matching `../agentcard/.env` and token file after coord
 
 This mode verifies `test_mode=true` before AgentCard calls, uses the existing durable cart/ceiling checks, and requires a definitive `sandbox_mode` decline for the intended scenario. A generic failure or budget rejection can produce a refund but does not pass sandbox-confirmation acceptance. Production credentials and real merchant purchasing are outside this command's scope.
 
+## Mason's module on Preprod escrow (`PURCHASE_BACKEND=mason` path)
+
+`mason-sandbox-refund` and `mason-payout` run `../agentcard/purchase.py` through the same `ModulePurchaser` the API uses, against real Preprod escrow. `purchase.py` reads `AGENTCARD_ENV` at import, so the environment variable is bound to the case: the sandbox case refuses `AGENTCARD_ENV=prod`; `mason-payout` requires it plus `--allow-real-card`. Both need the matching `.env`/token file in `../agentcard` and `--exclusive-handoff` (refresh tokens are single-use: only one machine may hold the token file).
+
+```sh
+# Sandbox: real escrow, real cart, Agentcard declines with sandbox_mode -> buyer refunded. No card charge is possible.
+.venv/bin/python -m cardano_card.acceptance --case mason-sandbox-refund \
+  --request work/mason-sandbox-input.json --request-id SANDBOX_REQUEST_ID \
+  --execute --exclusive-handoff --timeout 4200 --poll-seconds 10
+
+# Real card (Mason's), real order, escrow pays out. Keep the item under $10 subtotal.
+AGENTCARD_ENV=prod .venv/bin/python -m cardano_card.acceptance --case mason-payout \
+  --request work/mason-live-input.json --request-id LIVE_REQUEST_ID \
+  --execute --exclusive-handoff --allow-real-card --timeout 4200 --poll-seconds 10
+```
+
+`mason-sandbox-refund` passes only when Mason's saved outcome is `failed` with reason `sandbox_mode` (read from his ledger, never re-confirmed); any other failure still refunds the buyer but is reported as not the intended scenario. `mason-payout` passes only for a `success` whose order id is not simulated. Set `max_total_usd` to the item subtotal plus about $1.50: `purchase.py` compares the cart subtotal, and the card charge adds Agentcard's fee afterwards.
+
 ## Evidence and completion
 
-Each run saves private evidence in `work/preprod-evidence/JOB_ID.json`. Buyer and seller transaction references are combined, then inspected independently through the fixed Blockfrost Preprod endpoint. The evidence states what was checked and what remains unverified. A node-reported terminal status or a transaction existing on chain alone is insufficient for `PASS`.
+Each run saves private evidence in `work/preprod-evidence/JOB_ID.json`. Buyer and seller transaction references are combined, then inspected independently through a Blockfrost-compatible Preprod API: **NOWNodes** (`https://ada-testnet.nownodes.io`, header `api-key`) when `NOWNODES_API_KEY` is set in `infra/masumi/.env`, otherwise Blockfrost (`BLOCKFROST_API_KEY_PREPROD`); `CHAIN_PROVIDER=blockfrost|nownodes` forces one. Before reading any transaction the verifier fetches `genesis` and requires `network_magic == 1` (Cardano Preprod), so a mainnet or Preview endpoint can never produce a PASS. The evidence records which provider was used (`provider`, `reported_by`). The evidence states what was checked and what remains unverified. A node-reported terminal status or a transaction existing on chain alone is insufficient for `PASS`.
 
 `PASS` requires the intended terminal branch, funding proof, result proof for payout, and matching independent settlement verification. Unsupported transaction shapes, missing evidence or unavailable Blockfrost data remain `INCOMPLETE` with exit code 2. Node completion and proof completion are separate fields. Nothing in an escrow proof establishes a real merchant purchase in the simulated cases.
 
-Existing safety tests use mocked providers and synthetic chain fixtures. Wallets are funded and agent registration is confirmed. Live escrow acceptance remains pending until the real payout/refund runs complete. The payment container currently needs the documented Preprod protocol-11 cost-model patch; see LOCAL_MASUMI_SETUP.md before recreating it.
+Existing safety tests use mocked providers and synthetic chain fixtures. Wallets are funded and agent registration is confirmed. Live escrow acceptance passed on 2026-10-06 for both simulated-purchase cases (`payout` job `e1ff3dd2…`, `refund` job `d2053b79…`; tx hashes in BUILD_STATUS.md). The strict verifier now tolerates native tokens riding along in wallet change as long as every asset is conserved; recipient outputs stay ADA-only. The payment container currently needs the documented Preprod protocol-11 cost-model patch; see LOCAL_MASUMI_SETUP.md before recreating it.
