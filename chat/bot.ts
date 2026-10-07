@@ -3,6 +3,8 @@
 import { Spectrum, app as appCard, edit, richlink, type Space } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 import { terminal } from "spectrum-ts/providers/terminal";
+import { telegram } from "spectrum-ts/providers/telegram";
+import { whatsappBusiness } from "spectrum-ts/providers/whatsapp-business";
 import {
   generateAuthenticationOptions, generateRegistrationOptions,
   verifyAuthenticationResponse, verifyRegistrationResponse,
@@ -16,13 +18,15 @@ const PUBLIC = process.env.PUBLIC_URL ?? "http://localhost:8789";
 const RP = new URL(PUBLIC).hostname;
 const digits = (s: string) => s.replace(/\D/g, "").slice(-10);
 const OWNERS = (process.env.OWNER_PHONES ?? "").split(",").map(digits).filter(Boolean);
+const TG_OWNERS = (process.env.OWNER_TELEGRAM_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+const owner = (platform: string, id: string) => platform === "telegram" ? TG_OWNERS.includes(id) : OWNERS.includes(digits(id));
 const SCAN = "https://preprod.cardanoscan.io/transaction/";
 const SANDBOX = (process.env.AGENTCARD_ENV ?? "sandbox") !== "prod";
 const KEYS = `${import.meta.dir}/data/passkeys.json`;
 const BUY = /\b(?:buy|get|order)\s+(?:me\s+)?(.+?)(?:\s+(?:under|below|max|up to)\s+\$?(\d+(?:\.\d{1,2})?))?[.!?]*$/i;
 
 type Quote = { merchant: string; items: { name: string }[]; subtotal_cents: number; authorization_ceiling_cents: number };
-type Job = { id: string; space: Space; token: string; max: number; card?: any; quote?: Quote; approved?: boolean; challenge?: string; stage: string };
+type Job = { id: string; space: Space; platform: string; token: string; max: number; card?: any; quote?: Quote; approved?: boolean; challenge?: string; stage: string };
 type Key = { id: string; publicKey: string; counter: number };
 const jobs = new Map<string, Job>();
 const keys: Record<string, Key[]> = (await Bun.file(KEYS).exists()) ? await Bun.file(KEYS).json() : {};
@@ -38,6 +42,7 @@ const buyer = async (path: string, body?: object): Promise<any> => {
 // One card per job, edited in place as the job moves (new query string so iMessage refetches the preview).
 async function showCard(job: Job, stage: string) {
   job.stage = stage;
+  if (job.platform !== "imessage") return;
   const card = appCard(`${PUBLIC}/a/${job.token}?s=${stage}`);
   if (!job.card) job.card = await job.space.send(card);
   else await job.space.send(edit(card, job.card)).catch(() => {});
@@ -179,15 +184,21 @@ Bun.serve({
 });
 
 const cloud = Boolean(process.env.SPECTRUM_PROJECT_ID);
-const spectrum = await Spectrum({ providers: [cloud ? imessage.config() : terminal.config()] });
-console.log(`Cardano Card chat on ${cloud ? "iMessage" : "terminal"} · approvals at ${PUBLIC}`);
+const channels = (process.env.CHANNELS ?? "imessage").split(",").map((s) => s.trim());
+const providers: any[] = !cloud ? [terminal.config()] : [
+  ...(channels.includes("imessage") ? [imessage.config()] : []),
+  ...(channels.includes("whatsapp") ? [whatsappBusiness.config()] : []),
+  ...(channels.includes("telegram") ? [telegram.config()] : []),
+];
+const spectrum = await Spectrum({ providers });
+console.log(`Cardano Card chat on ${cloud ? channels.join(", ") : "terminal"} · approvals at ${PUBLIC}`);
 
 async function handle(space: Space, message: any) {
   if (message.content.type !== "text") return;
   const text = message.content.text.trim();
   const sender = message.sender?.id ?? "";
-  console.log(`message from ${sender} in ${space.id}: ${text.slice(0, 80)}`);
-  if (cloud && !OWNERS.includes(digits(sender))) return console.log(`ignored message from ${sender}`);
+  console.log(`${message.platform} message from ${sender}: ${text.slice(0, 80)}`);
+  if (cloud && !owner(message.platform, sender)) return console.log(`ignored ${message.platform} message from ${sender}`);
   const open = [...jobs.values()].find((j) => j.space.id === space.id && j.stage === "approve" && !j.approved);
   if (!cloud && open && /^\/?approve$/i.test(text)) return approve(open);
   const m = text.match(BUY);
@@ -197,7 +208,7 @@ async function handle(space: Space, message: any) {
   await space.send(`On it. Asking Cardano Card on Masumi for a quote on "${m[1]}" (max $${max}).`);
   // The budget must cover the card's authorization ceiling (~$11 over the item price), so the price cap goes in the ask.
   const { job_id } = await buyer("/jobs", { ask: `${m[1]} under $${max}`, max_total_usd: max + 12 });
-  const job: Job = { id: job_id, space, token: crypto.randomUUID().replaceAll("-", ""), stage: "quote", max };
+  const job: Job = { id: job_id, space, platform: message.platform, token: crypto.randomUUID().replaceAll("-", ""), stage: "quote", max };
   jobs.set(job_id, job);
   follow(job).catch((e) => console.log(`follow ${job_id} stopped: ${e.message}`));
 }
