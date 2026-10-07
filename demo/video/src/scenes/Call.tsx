@@ -1,13 +1,17 @@
 import React from 'react';
 import {AbsoluteFill} from 'remotion';
-import {Mono, Panel, Pill, Pop, Typed} from '../ui';
+import {Mono, Panel, Pill, Pop, Rise, Typed} from '../ui';
 import {T} from '../theme';
 import {FACTS} from '../facts';
 
 const key = (k: string, v: string, last = false) => ({text: `  "${k}": ${v}${last ? '' : ','}`, color: T.text});
 
 export const Call: React.FC = () => (
-  <AbsoluteFill style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 48}}>
+  <AbsoluteFill>
+  <AbsoluteFill style={{alignItems: 'center', paddingTop: 130}}>
+    <Rise text="Another agent *asks* for gum. Cardano Card *quotes* it." start={2} size={60} />
+  </AbsoluteFill>
+  <AbsoluteFill style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 48, paddingTop: 110}}>
     <Pop start={0}>
       <Panel title="buyer agent → cardano card" width={760} badge={<Pill>request</Pill>}>
         <Typed start={8} cps={3} lines={[
@@ -35,5 +39,6 @@ export const Call: React.FC = () => (
         </Pop>
       </Panel>
     </Pop>
+  </AbsoluteFill>
   </AbsoluteFill>
 );

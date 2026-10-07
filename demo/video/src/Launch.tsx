@@ -10,7 +10,7 @@ import {Proof} from './scenes/Proof';
 import {Close} from './scenes/Close';
 
 const SCENES: [React.FC, number][] = [
-  [Hook, 105], [Reveal, 105], [Agents, 180], [Call, 180], [Escrow, 165], [Checkout, 165], [Proof, 195], [Close, 165],
+  [Hook, 105], [Reveal, 105], [Agents, 165], [Call, 180], [Escrow, 150], [Checkout, 195], [Proof, 180], [Close, 210],
 ];
 export const LAUNCH_FRAMES = SCENES.reduce((sum, [, length]) => sum + length, 0);
 
