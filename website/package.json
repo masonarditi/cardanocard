@@ -1,0 +1,11 @@
+{
+  "name": "cardano-card-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port 5175",
+    "build": "next build"
+  },
+  "dependencies": {"next": "16.4.0", "react": "19.3.0", "react-dom": "19.3.0"},
+  "engines": {"node": ">=22.9.0"}
+}

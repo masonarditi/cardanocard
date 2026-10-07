@@ -1,0 +1,7 @@
+.env*
+.DS_Store
+node_modules/
+.openai/*.local.*
+.next/
+out/
+.sites-runtime/

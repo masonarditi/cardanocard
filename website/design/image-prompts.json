@@ -1,0 +1,11 @@
+{
+  "asset": "public/assets/pink-salt-lake.png",
+  "method": "Built-in image_gen tool",
+  "prompt": "Use case: photorealistic-natural. Asset type: full-bleed website hero background, portrait 2:3 composition, high resolution. Create an original cinematic aerial photograph looking straight down at a naturally pink salt lake shoreline at dusk. Deep rose, magenta mineral water and dark burgundy/plum water occupy the upper center with quiet, almost black-wine negative space for a large white website headline. Across the bottom and sides, sweeping organic bands of pale blush salt crust and delicate ivory foam/ripples create the graceful motion and fine texture of ocean waves, with luminous dusty pink and restrained fuchsia accents inspired by the color #FA008C. Rich photographic detail: branching mineral edges, gentle wavelets, subtle reflected light. Dramatic but serene, sophisticated editorial landscape photography, believable natural geography and light, no oversaturated candy look. Broad soft dark center in the upper half; nature texture concentrated around the lower half and outer edges to frame a centered phone mockup. Fill the whole image; no horizon, no sky, no people, no buildings, no UI, no devices, no text, no logos, no watermark. The whole image should read unmistakably pink rather than purple, blue, red, orange, or brown.",
+  "preserved_asset": "public/assets/ocean.png",
+  "palette": {
+    "reference": "https://www.masumi.network/",
+    "observed_accent": "#FA008C",
+    "accessible_action_color": "#BF006C"
+  }
+}
