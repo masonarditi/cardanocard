@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import hmac
 import os
 import sys
@@ -7,6 +8,7 @@ from contextlib import asynccontextmanager, suppress
 from typing import Literal
 
 from dotenv import load_dotenv
+from fastapi.responses import PlainTextResponse
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -207,6 +209,15 @@ def create_app(engine=None, token=None, background=True, poll_seconds=2, fronten
     @app.get("/input_schema")
     async def schema():
         return INPUT_SCHEMA
+
+    @app.get("/get-credential", response_class=PlainTextResponse)
+    async def masumi_verification(masumi_challenge: str = Query(min_length=1, max_length=200)):
+        # Masumi SaaS ownership check: GET {apiUrl}/get-credential?masumi_challenge=... must return
+        # HMAC-SHA256(challenge, MASUMI_VERIFICATION_SECRET) as hex plain text (masumi-saas agent-verification.ts).
+        secret = os.getenv("MASUMI_VERIFICATION_SECRET", "")
+        if not secret:
+            raise HTTPException(404, "Verification is not configured")
+        return hmac.new(secret.encode(), masumi_challenge.encode(), hashlib.sha256).hexdigest()
 
     @app.post("/start_job", dependencies=[Depends(job_caller)])
     async def start(request: StartRequest):

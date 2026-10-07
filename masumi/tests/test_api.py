@@ -165,3 +165,24 @@ async def test_public_jobs_open_mip003_routes_but_keep_operator_routes_gated(tmp
                 assert (await client.get("/evidence", params={"job_id": started.json()["id"]})).status_code == 401
     finally:
         store.close()
+
+
+async def test_masumi_verification_endpoint_returns_hmac_of_challenge(tmp_path, monkeypatch):
+    import hashlib, hmac
+    from cardano_card.api import create_app
+    from cardano_card.engine import Engine
+    from cardano_card.providers import FakeEscrow, FakePurchaser
+    from cardano_card.store import Store
+    store = Store(str(tmp_path / "jobs.db"))
+    app = create_app(engine=Engine(store, FakeEscrow(store), FakePurchaser(store)), token="t" * 32, background=False, frontend=False)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            async with app.router.lifespan_context(app):
+                monkeypatch.delenv("MASUMI_VERIFICATION_SECRET", raising=False)
+                assert (await client.get("/get-credential", params={"masumi_challenge": "c"})).status_code == 404
+                monkeypatch.setenv("MASUMI_VERIFICATION_SECRET", "s3cret")
+                r = await client.get("/get-credential", params={"masumi_challenge": "abc-123"})
+                assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
+                assert r.text == hmac.new(b"s3cret", b"abc-123", hashlib.sha256).hexdigest()
+    finally:
+        store.close()
